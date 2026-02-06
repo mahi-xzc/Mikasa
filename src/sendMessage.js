@@ -1,194 +1,68 @@
 "use strict";
-const utils = require("../utils");
-const log = require("npmlog");
+
+var utils = require("../utils");
+var log = require("npmlog");
+var bluebird = require("bluebird");
+
+var allowedProperties = {
+  attachment: true,
+  url: true,
+  sticker: true,
+  emoji: true,
+  emojiSize: true,
+  body: true,
+  mentions: true,
+  location: true,
+};
 
 module.exports = function (defaultFuncs, api, ctx) {
   function uploadAttachment(attachments, callback) {
-    const uploads = [];
-    for (let i = 0; i < attachments.length; i++) {
+    var uploads = [];
+    for (var i = 0; i < attachments.length; i++) {
       if (!utils.isReadableStream(attachments[i])) {
-        throw { error: "Attachment should be a readable stream" };
+        throw { error: "Attachment should be a readable stream and not " + utils.getType(attachments[i]) + "." };
       }
-
-      const form = {
-        upload_1024: attachments[i],
-        voice_clip: "true"
-      };
-
+      var form = { upload_1024: attachments[i], voice_clip: "true" };
       uploads.push(
-        defaultFuncs
-          .postFormData("https://upload.facebook.com/ajax/mercury/upload.php", ctx.jar, form, {})
-          .then(utils.parseAndCheckLogin(ctx, defaultFuncs))
-          .then(resData => {
-            if (resData.error) throw resData;
-            return resData.payload.metadata[0];
-          })
+        defaultFuncs.postFormData("https://upload.facebook.com/ajax/mercury/upload.php", ctx.jar, form, {})
+        .then(utils.parseAndCheckLogin(ctx, defaultFuncs))
+        .then(function (resData) {
+          if (resData.error) throw resData;
+          return resData.payload.metadata[0];
+        })
       );
     }
-
-    Promise.all(uploads).then(resData => callback(null, resData)).catch(err => {
+    bluebird.all(uploads).then(function (resData) { callback(null, resData); })
+    .catch(function (err) {
       log.error("uploadAttachment", err);
-      callback(err);
+      return callback(err);
     });
   }
 
-  function sendEncryptedMessageAPI(form, threadID, callback) {
-    defaultFuncs
-      .post("https://www.facebook.com/api/graphqlbatch/", ctx.jar, form)
-      .then(utils.parseAndCheckLogin(ctx, defaultFuncs))
-      .then(resData => {
-        if (!resData) return callback({ error: "Encrypted send failed" });
-        
-        if (Array.isArray(resData) && resData[0]?.o0?.errors) {
-          return callback({ error: resData[0].o0.errors });
-        }
-
-        const messageInfo = {
-          threadID: threadID,
-          messageID: utils.generateOfflineThreadingID(),
-          timestamp: Date.now(),
-          encrypted: true
-        };
-        callback(null, messageInfo);
-      })
-      .catch(err => {
-        log.error("sendEncryptedMessage", err);
-        if (err.error === "Not logged in.") ctx.loggedIn = false;
-        callback(err);
-      });
+  function getUrl(url, callback) {
+    var form = { image_height: 960, image_width: 960, uri: url };
+    defaultFuncs.post("https://www.facebook.com/message_share_attachment/fromURI/", ctx.jar, form)
+    .then(utils.parseAndCheckLogin(ctx, defaultFuncs))
+    .then(function (resData) {
+      if (resData.error) return callback(resData);
+      if (!resData.payload) return callback({ error: "Invalid url" });
+      callback(null, resData.payload.share_data.share_params);
+    })
+    .catch(function (err) {
+      log.error("getUrl", err);
+      return callback(err);
+    });
   }
 
-  return function sendMessage(msg, threadID, callback, replyToMessage, isGroup) {
-    if (!callback && typeof threadID === "function") {
-      return threadID({ error: "Pass threadID as second argument" });
-    }
-
-    if (!replyToMessage && typeof callback === "string") {
-      replyToMessage = callback;
-      callback = undefined;
-    }
-
-    let resolveFunc, rejectFunc;
-    const returnPromise = new Promise((resolve, reject) => {
-      resolveFunc = resolve;
-      rejectFunc = reject;
-    });
-
-    if (!callback) {
-      callback = (err, data) => err ? rejectFunc(err) : resolveFunc(data);
-    }
-
-    const msgType = utils.getType(msg);
-    const threadIDType = utils.getType(threadID);
-
-    if (msgType !== "String" && msgType !== "Object") {
-      return callback({ error: "Message should be string or object" });
-    }
-
-    if (threadIDType !== "Array" && threadIDType !== "Number" && threadIDType !== "String") {
-      return callback({ error: "ThreadID should be array, number or string" });
-    }
-
-    if (msgType === "String") msg = { body: msg };
-
-    const messageAndOTID = utils.generateOfflineThreadingID();
-    const isEncrypted = msg.encrypted || ctx.globalOptions.encryptedMode;
-    
-    if (isEncrypted) {
-      const encryptedForm = {
-        av: ctx.userID,
-        queries: JSON.stringify({
-          o0: {
-            doc_id: "2826142347169314",
-            query_params: {
-              data: {
-                actor_id: ctx.userID,
-                client_mutation_id: Math.floor(Math.random() * 1000000).toString(),
-                message: {
-                  text: msg.body || "",
-                  ranges: [],
-                  attachment: null
-                },
-                offline_threading_id: messageAndOTID,
-                message_id: messageAndOTID,
-                thread_id: threadID.toString(),
-                timestamp: Date.now(),
-                skip_url_preview_gen: false
-              }
-            }
-          }
-        })
-      };
-
-      if (msg.attachment && Array.isArray(msg.attachment)) {
-        uploadAttachment(msg.attachment, (err, files) => {
-          if (err) return callback(err);
-          
-          if (files[0]?.image_id) {
-            encryptedForm.queries = JSON.stringify({
-              o0: {
-                doc_id: "2826142347169314",
-                query_params: {
-                  data: {
-                    actor_id: ctx.userID,
-                    client_mutation_id: Math.floor(Math.random() * 1000000).toString(),
-                    message: {
-                      text: msg.body || "",
-                      ranges: [],
-                      attachment: {
-                        image_id: files[0].image_id,
-                        media_type: "PHOTO"
-                      }
-                    },
-                    offline_threading_id: messageAndOTID,
-                    message_id: messageAndOTID,
-                    thread_id: threadID.toString(),
-                    timestamp: Date.now(),
-                    skip_url_preview_gen: false
-                  }
-                }
-              }
-            });
-          }
-          
-          sendEncryptedMessageAPI(encryptedForm, threadID, callback);
-        });
-      } else {
-        sendEncryptedMessageAPI(encryptedForm, threadID, callback);
-      }
-      
-      return returnPromise;
-    }
-
-    const form = {
-      client: "mercury",
-      action_type: "ma-type:user-generated-message",
-      author: "fbid:" + ctx.userID,
-      timestamp: Date.now(),
-      timestamp_absolute: "Today",
-      timestamp_relative: utils.generateTimestampRelative(),
-      is_unread: false,
-      is_cleared: false,
-      is_forward: false,
-      source: "source:chat:web",
-      body: msg.body ? msg.body.toString() : "",
-      html_body: false,
-      ui_push_phase: "V3",
-      offline_threading_id: messageAndOTID,
-      message_id: messageAndOTID,
-      threading_id: utils.generateThreadingID(ctx.clientID),
-      has_attachment: !!(msg.attachment || msg.url || msg.sticker),
-      signatureID: utils.getSignatureID(),
-      replied_to_message_id: replyToMessage || null
-    };
-
+  function sendContent(form, threadID, isSingleUser, messageAndOTID, callback) {
     if (utils.getType(threadID) === "Array") {
-      threadID.forEach((id, i) => form["specific_to_list[" + i + "]"] = "fbid:" + id);
+      for (var i = 0; i < threadID.length; i++) {
+        form["specific_to_list[" + i + "]"] = "fbid:" + threadID[i];
+      }
       form["specific_to_list[" + threadID.length + "]"] = "fbid:" + ctx.userID;
       form["client_thread_id"] = "root:" + messageAndOTID;
     } else {
-      const singleUser = (isGroup === null) ? threadID.toString().length <= 15 : !isGroup;
-      if (singleUser) {
+      if (isSingleUser) {
         form["specific_to_list[0]"] = "fbid:" + threadID;
         form["specific_to_list[1]"] = "fbid:" + ctx.userID;
         form["other_user_fbid"] = threadID;
@@ -202,118 +76,201 @@ module.exports = function (defaultFuncs, api, ctx) {
       form["specific_to_list[1]"] = "fbid:" + ctx.globalOptions.pageID;
       form["creator_info[creatorID]"] = ctx.userID;
       form["creator_info[creatorType]"] = "direct_admin";
+      form["creator_info[labelType]"] = "sent_message";
       form["creator_info[pageID]"] = ctx.globalOptions.pageID;
+      form["request_user_id"] = ctx.globalOptions.pageID;
+      form["creator_info[profileURI]"] = "https://www.facebook.com/profile.php?id=" + ctx.userID;
     }
 
-    if (msg.attachment) {
-      if (!Array.isArray(msg.attachment)) msg.attachment = [msg.attachment];
-      
-      uploadAttachment(msg.attachment, (err, files) => {
-        if (err) return callback(err);
-        
-        form["image_ids"] = [];
-        form["gif_ids"] = [];
-        form["file_ids"] = [];
-        form["video_ids"] = [];
-        form["audio_ids"] = [];
+    defaultFuncs.post("https://www.facebook.com/messaging/send/", ctx.jar, form)
+    .then(utils.parseAndCheckLogin(ctx, defaultFuncs))
+    .then(function (resData) {
+      if (!resData) return callback({ error: "Send message failed." });
+      if (resData.error) {
+        if (resData.error === 1545012) log.warn("sendMessage", "Got error 1545012. Not part of conversation " + threadID);
+        return callback(resData);
+      }
+      var messageInfo = resData.payload.actions.reduce(function (p, v) {
+        return { threadID: v.thread_fbid, messageID: v.message_id, timestamp: v.timestamp } || p;
+      }, null);
+      return callback(null, messageInfo);
+    })
+    .catch(function (err) {
+      log.error("sendMessage", err);
+      if (utils.getType(err) == "Object" && err.error === "Not logged in.") ctx.loggedIn = false;
+      return callback(err);
+    });
+  }
 
-        files.forEach(file => {
-          const key = Object.keys(file)[0];
-          form[key + "s"].push(file[key]);
-        });
-
-        if (msg.url) {
-          const urlForm = {
-            image_height: 960,
-            image_width: 960,
-            uri: msg.url
-          };
-          
-          defaultFuncs
-            .post("https://www.facebook.com/message_share_attachment/fromURI/", ctx.jar, urlForm)
-            .then(utils.parseAndCheckLogin(ctx, defaultFuncs))
-            .then(resData => {
-              if (!resData.error && resData.payload) {
-                form["shareable_attachment[share_type]"] = "100";
-                form["shareable_attachment[share_params]"] = resData.payload.share_data.share_params;
-              }
-              sendNormalMessage(form, threadID, callback);
-            })
-            .catch(() => sendNormalMessage(form, threadID, callback));
-        } else {
-          sendNormalMessage(form, threadID, callback);
-        }
-      });
-    } else if (msg.url) {
-      const urlForm = {
-        image_height: 960,
-        image_width: 960,
-        uri: msg.url
-      };
-      
-      defaultFuncs
-        .post("https://www.facebook.com/message_share_attachment/fromURI/", ctx.jar, urlForm)
-        .then(utils.parseAndCheckLogin(ctx, defaultFuncs))
-        .then(resData => {
-          if (!resData.error && resData.payload) {
-            form["shareable_attachment[share_type]"] = "100";
-            form["shareable_attachment[share_params]"] = resData.payload.share_data.share_params;
-          }
-          sendNormalMessage(form, threadID, callback);
-        })
-        .catch(() => sendNormalMessage(form, threadID, callback));
+  function send(form, threadID, messageAndOTID, callback, isGroup) {
+    if (utils.getType(threadID) === "Array") {
+      sendContent(form, threadID, false, messageAndOTID, callback);
     } else {
-      sendNormalMessage(form, threadID, callback);
+      if (utils.getType(isGroup) != "Boolean")
+        sendContent(form, threadID, threadID.length <= 15, messageAndOTID, callback);
+      else
+        sendContent(form, threadID, !isGroup, messageAndOTID, callback);
     }
+  }
 
-    function sendNormalMessage(form, threadID, callback) {
-      if (msg.sticker) form["sticker_id"] = msg.sticker;
-      if (msg.location) {
-        if (msg.location.latitude && msg.location.longitude) {
-          form["location_attachment[coordinates][latitude]"] = msg.location.latitude;
-          form["location_attachment[coordinates][longitude]"] = msg.location.longitude;
-          form["location_attachment[is_current_location]"] = !!msg.location.current;
-        }
-      }
-      if (msg.mentions) {
-        for (let i = 0; i < msg.mentions.length; i++) {
-          const mention = msg.mentions[i];
-          if (!mention.tag) continue;
-          const offset = (form["body"] || "").indexOf(mention.tag);
-          if (offset < 0) continue;
-          
-          form["body"] = '\u200E' + (form["body"] || "");
-          form["profile_xmd[" + i + "][offset]"] = offset + 1;
-          form["profile_xmd[" + i + "][length]"] = mention.tag.length;
-          form["profile_xmd[" + i + "][id]"] = mention.id || 0;
-          form["profile_xmd[" + i + "][type]"] = "p";
-        }
-      }
+  function handleUrl(msg, form, cb) {
+    if (msg.url) {
+      form["shareable_attachment[share_type]"] = "100";
+      getUrl(msg.url, function (err, params) {
+        if (err) return cb(err);
+        form["shareable_attachment[share_params]"] = params;
+        cb();
+      });
+    } else cb();
+  }
 
-      defaultFuncs
-        .post("https://www.facebook.com/messaging/send/", ctx.jar, form)
-        .then(utils.parseAndCheckLogin(ctx, defaultFuncs))
-        .then(resData => {
-          if (!resData) return callback({ error: "Send failed" });
-          if (resData.error) {
-            if (resData.error === 1545012) log.warn("sendMessage", "Not in conversation");
-            return callback(resData);
-          }
+  function handleLocation(msg, form, cb) {
+    if (msg.location) {
+      if (msg.location.latitude == null || msg.location.longitude == null) return cb({ error: "location property needs both latitude and longitude" });
+      form["location_attachment[coordinates][latitude]"] = msg.location.latitude;
+      form["location_attachment[coordinates][longitude]"] = msg.location.longitude;
+      form["location_attachment[is_current_location]"] = !!msg.location.current;
+    }
+    cb();
+  }
 
-          const messageInfo = resData.payload.actions.reduce((p, v) => ({
-            threadID: v.thread_fbid,
-            messageID: v.message_id,
-            timestamp: v.timestamp
-          }), null);
-          callback(null, messageInfo);
-        })
-        .catch(err => {
-          log.error("sendMessage", err);
-          if (err.error === "Not logged in.") ctx.loggedIn = false;
-          callback(err);
+  function handleSticker(msg, form, cb) {
+    if (msg.sticker) form["sticker_id"] = msg.sticker;
+    cb();
+  }
+
+  function handleEmoji(msg, form, cb) {
+    if (msg.emojiSize != null && msg.emoji == null) return cb({ error: "emoji property is empty" });
+    if (msg.emoji) {
+      if (msg.emojiSize == null) msg.emojiSize = "medium";
+      if (msg.emojiSize != "small" && msg.emojiSize != "medium" && msg.emojiSize != "large")
+        return cb({ error: "emojiSize property is invalid" });
+      if (form["body"] != null && form["body"] != "")
+        return cb({ error: "body is not empty" });
+      form["body"] = msg.emoji;
+      form["tags[0]"] = "hot_emoji_size:" + msg.emojiSize;
+    }
+    cb();
+  }
+
+  function handleAttachment(msg, form, cb) {
+    if (msg.attachment) {
+      form["image_ids"] = [];
+      form["gif_ids"] = [];
+      form["file_ids"] = [];
+      form["video_ids"] = [];
+      form["audio_ids"] = [];
+      if (utils.getType(msg.attachment) !== "Array") msg.attachment = [msg.attachment];
+      uploadAttachment(msg.attachment, function (err, files) {
+        if (err) return cb(err);
+        files.forEach(function (file) {
+          var key = Object.keys(file);
+          var type = key[0];
+          form["" + type + "s"].push(file[type]);
         });
-    }
+        cb();
+      });
+    } else cb();
+  }
 
+  function handleMention(msg, form, cb) {
+    if (msg.mentions) {
+      for (let i = 0; i < msg.mentions.length; i++) {
+        const mention = msg.mentions[i];
+        const tag = mention.tag;
+        if (typeof tag !== "string") return cb({ error: "Mention tags must be strings." });
+        const offset = msg.body.indexOf(tag, mention.fromIndex || 0);
+        if (offset < 0) log.warn("handleMention", 'Mention for "' + tag + '" not found in message string.');
+        if (mention.id == null) log.warn("handleMention", "Mention id should be non-null.");
+        const id = mention.id || 0;
+        form["profile_xmd[" + i + "][offset]"] = offset;
+        form["profile_xmd[" + i + "][length]"] = tag.length;
+        form["profile_xmd[" + i + "][id]"] = id;
+        form["profile_xmd[" + i + "][type]"] = "p";
+      }
+    }
+    cb();
+  }
+
+  return function sendMessage(msg, threadID, callback, replyToMessage, isGroup) {
+    typeof isGroup == "undefined" ? isGroup = null : "";
+    if (!callback && (utils.getType(threadID) === "Function" || utils.getType(threadID) === "AsyncFunction"))
+      return threadID({ error: "Pass a threadID as a second argument." });
+    if (!replyToMessage && utils.getType(callback) === "String") {
+      replyToMessage = callback;
+      callback = undefined;
+    }
+    var resolveFunc = function () { };
+    var rejectFunc = function () { };
+    var returnPromise = new Promise(function (resolve, reject) {
+      resolveFunc = resolve;
+      rejectFunc = reject;
+    });
+    if (!callback) {
+      callback = function (err, data) {
+        if (err) return rejectFunc(err);
+        resolveFunc(data);
+      };
+    }
+    var msgType = utils.getType(msg);
+    if (msgType !== "String" && msgType !== "Object")
+      return callback({ error: "Message should be of type string or object and not " + msgType + "." });
+    if (msgType === "String") msg = { body: msg };
+    var disallowedProperties = Object.keys(msg).filter(prop => !allowedProperties[prop]);
+    if (disallowedProperties.length > 0)
+      return callback({ error: "Dissallowed props: `" + disallowedProperties.join(", ") + "`" });
+    var messageAndOTID = utils.generateOfflineThreadingID();
+    var form = {
+      client: "mercury",
+      action_type: "ma-type:user-generated-message",
+      author: "fbid:" + ctx.userID,
+      timestamp: Date.now(),
+      timestamp_absolute: "Today",
+      timestamp_relative: utils.generateTimestampRelative(),
+      timestamp_time_passed: "0",
+      is_unread: false,
+      is_cleared: false,
+      is_forward: false,
+      is_filtered_content: false,
+      is_filtered_content_bh: false,
+      is_filtered_content_account: false,
+      is_filtered_content_quasar: false,
+      is_filtered_content_invalid_app: false,
+      is_spoof_warning: false,
+      source: "source:chat:web",
+      "source_tags[0]": "source:chat",
+      body: msg.body ? msg.body.toString() : "",
+      html_body: false,
+      ui_push_phase: "V3",
+      status: "0",
+      offline_threading_id: messageAndOTID,
+      message_id: messageAndOTID,
+      threading_id: utils.generateThreadingID(ctx.clientID),
+      "ephemeral_ttl_mode:": "0",
+      manual_retry_cnt: "0",
+      has_attachment: !!(msg.attachment || msg.url || msg.sticker),
+      signatureID: utils.getSignatureID(),
+      replied_to_message_id: replyToMessage
+    };
+    handleLocation(msg, form, (err) => {
+      if (err) return callback(err);
+      handleSticker(msg, form, (err) => {
+        if (err) return callback(err);
+        handleAttachment(msg, form, (err) => {
+          if (err) return callback(err);
+          handleUrl(msg, form, (err) => {
+            if (err) return callback(err);
+            handleEmoji(msg, form, (err) => {
+              if (err) return callback(err);
+              handleMention(msg, form, (err) => {
+                if (err) return callback(err);
+                send(form, threadID, messageAndOTID, callback, isGroup);
+              });
+            });
+          });
+        });
+      });
+    });
     return returnPromise;
   };
 };
