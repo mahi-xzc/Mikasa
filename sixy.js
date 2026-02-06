@@ -203,12 +203,38 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             const mentionIDs = Object.keys(mentions);
 
             function normalizeText(text) {
+                if (!text) return '';
                 return text
                     .toLowerCase()
                     .normalize('NFD')
                     .replace(/[\u0300-\u036f]/g, '')
                     .replace(/[^a-z0-9\s]/g, '')
                     .trim();
+            }
+
+            function extractNameParts(fullName) {
+                const parts = fullName.trim().split(/\s+/);
+                const firstName = parts[0] || '';
+                const lastName = parts.slice(1).join(' ') || '';
+                return { firstName, lastName };
+            }
+
+            function fuzzyMatch(text1, text2, threshold = 0.7) {
+                if (!text1 || !text2) return 0;
+                const normalized1 = normalizeText(text1);
+                const normalized2 = normalizeText(text2);
+                if (normalized1 === normalized2) return 1;
+                
+                const longer = normalized1.length > normalized2.length ? normalized1 : normalized2;
+                const shorter = normalized1.length > normalized2.length ? normalized2 : normalized1;
+                
+                if (longer.includes(shorter)) return shorter.length / longer.length;
+                
+                let score = 0;
+                for (let i = 0; i < shorter.length; i++) {
+                    if (longer.includes(shorter[i])) score++;
+                }
+                return score / longer.length;
             }
 
             if (threadData && threadData.userInfo) {
@@ -227,42 +253,112 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             if (ghostID) {
                 const rawTagText = mentions[ghostID] || "";
                 const searchName = rawTagText.replace(/^@/, "").trim();
-                const normalizedSearchName = normalizeText(searchName);
                 
                 if (searchName) {
                     try {
                         const threadInfo = await api.getThreadInfo(threadID);
                         const { nicknames = {}, userInfo = [] } = threadInfo;
+                        const { firstName: searchFirstName, lastName: searchLastName } = extractNameParts(searchName);
                         
-                        let foundID = Object.keys(nicknames).find(id => 
-                            normalizeText(nicknames[id]).includes(normalizedSearchName) ||
-                            nicknames[id].toLowerCase().includes(searchName.toLowerCase())
-                        );
+                        let foundID = null;
+                        let bestMatchScore = 0;
                         
-                        if (!foundID) {
-                            const matchedUser = userInfo.find(u => {
-                                const fullName = u.name || `${u.firstName || ''} ${u.lastName || ''}`.trim();
-                                const firstName = u.firstName || '';
-                                return (
-                                    (fullName && normalizeText(fullName).includes(normalizedSearchName)) ||
-                                    (firstName && normalizeText(firstName).includes(normalizedSearchName)) ||
-                                    (fullName && fullName.toLowerCase().includes(searchName.toLowerCase())) ||
-                                    (firstName && firstName.toLowerCase().includes(searchName.toLowerCase()))
-                                );
-                            });
-                            if (matchedUser) foundID = matchedUser.id;
+                        const searchNameLower = searchName.toLowerCase();
+                        const normalizedSearchName = normalizeText(searchName);
+                        
+                        for (const id of Object.keys(nicknames)) {
+                            const nickname = nicknames[id] || "";
+                            if (!nickname) continue;
+                            
+                            const { firstName: nickFirstName, lastName: nickLastName } = extractNameParts(nickname);
+                            
+                            const nicknameLower = nickname.toLowerCase();
+                            const normalizedNickname = normalizeText(nickname);
+                            
+                            let score = 0;
+                            
+                            if (nicknameLower === searchNameLower || normalizedNickname === normalizedSearchName) {
+                                score = 1;
+                            } else if (nicknameLower.includes(searchNameLower) || searchNameLower.includes(nicknameLower)) {
+                                score = 0.9;
+                            } else if (nickFirstName.toLowerCase() === searchFirstName.toLowerCase() && 
+                                      (searchLastName === '' || nickLastName.toLowerCase().includes(searchLastName.toLowerCase()) || 
+                                       searchLastName.toLowerCase().includes(nickLastName.toLowerCase()))) {
+                                score = 0.85;
+                            } else {
+                                const fullMatchScore = fuzzyMatch(nickname, searchName);
+                                const firstNameScore = fuzzyMatch(nickFirstName, searchFirstName);
+                                const lastNameScore = searchLastName ? fuzzyMatch(nickLastName, searchLastName) : 0.5;
+                                
+                                score = Math.max(fullMatchScore, (firstNameScore * 0.6 + lastNameScore * 0.4));
+                            }
+                            
+                            if (score > bestMatchScore && score > 0.4) {
+                                bestMatchScore = score;
+                                foundID = id;
+                            }
+                        }
+                        
+                        if (!foundID && userInfo.length > 0) {
+                            for (const user of userInfo) {
+                                const fullName = user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim();
+                                if (!fullName) continue;
+                                
+                                const { firstName: userFirstName, lastName: userLastName } = extractNameParts(fullName);
+                                const firstName = user.firstName || '';
+                                
+                                const fullNameLower = fullName.toLowerCase();
+                                const firstNameLower = firstName.toLowerCase();
+                                
+                                let score = 0;
+                                
+                                if (fullNameLower === searchNameLower || normalizeText(fullName) === normalizedSearchName) {
+                                    score = 1;
+                                } else if (fullNameLower.includes(searchNameLower) || searchNameLower.includes(fullNameLower)) {
+                                    score = 0.9;
+                                } else if (firstNameLower === searchFirstName.toLowerCase() && 
+                                          (searchLastName === '' || userLastName?.toLowerCase().includes(searchLastName.toLowerCase()) || 
+                                           searchLastName.toLowerCase().includes(userLastName?.toLowerCase() || ''))) {
+                                    score = 0.85;
+                                } else if (userFirstName.toLowerCase() === searchFirstName.toLowerCase()) {
+                                    score = 0.8;
+                                } else {
+                                    const fullMatchScore = fuzzyMatch(fullName, searchName);
+                                    const firstNameMatchScore = fuzzyMatch(firstName, searchFirstName);
+                                    const lastNameMatchScore = searchLastName ? fuzzyMatch(userLastName || '', searchLastName) : 0.5;
+                                    
+                                    score = Math.max(fullMatchScore, (firstNameMatchScore * 0.6 + lastNameMatchScore * 0.4));
+                                }
+                                
+                                if (score > bestMatchScore && score > 0.4) {
+                                    bestMatchScore = score;
+                                    foundID = user.id;
+                                }
+                            }
                         }
                         
                         if (foundID) {
                             delete mentions[ghostID];
+                            let finalName = rawTagText.replace("@", "");
+                            
                             if (threadData && threadData.userInfo) {
                                 const dbUser = threadData.userInfo.find(u => u.id == foundID);
-                                mentions[foundID] = dbUser ? dbUser.name : rawTagText.replace("@", "");
+                                if (dbUser && dbUser.name) {
+                                    finalName = dbUser.name;
+                                } else {
+                                    const threadUser = userInfo.find(u => u.id == foundID);
+                                    if (threadUser) {
+                                        finalName = threadUser.name || `${threadUser.firstName || ''} ${threadUser.lastName || ''}`.trim() || finalName;
+                                    }
+                                }
                             } else {
-                                const userInfoEntry = threadInfo.userInfo.find(u => u.id == foundID);
-                                const fullName = userInfoEntry ? userInfoEntry.name || `${userInfoEntry.firstName || ''} ${userInfoEntry.lastName || ''}`.trim() : rawTagText.replace("@", "");
-                                mentions[foundID] = fullName;
+                                const threadUser = userInfo.find(u => u.id == foundID);
+                                if (threadUser) {
+                                    finalName = threadUser.name || `${threadUser.firstName || ''} ${threadUser.lastName || ''}`.trim() || finalName;
+                                }
                             }
+                            
+                            mentions[foundID] = finalName;
                             event.mentions = mentions;
                         } else {
                             delete mentions[ghostID];
