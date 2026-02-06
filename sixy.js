@@ -201,7 +201,16 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
 
             const mentions = event.mentions || {};
             const mentionIDs = Object.keys(mentions);
-            
+
+            function normalizeText(text) {
+                return text
+                    .toLowerCase()
+                    .normalize('NFD')
+                    .replace(/[\u0300-\u036f]/g, '')
+                    .replace(/[^a-z0-9\s]/g, '')
+                    .trim();
+            }
+
             if (threadData && threadData.userInfo) {
                 for (const id of mentionIDs) {
                     if (!id.startsWith("MENTION_") && !isNaN(id)) {
@@ -217,28 +226,47 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             const ghostID = mentionIDs.find(id => id.startsWith("MENTION_"));
             if (ghostID) {
                 const rawTagText = mentions[ghostID] || "";
-                const searchName = rawTagText.replace(/^@/, "").trim().toLowerCase();
+                const searchName = rawTagText.replace(/^@/, "").trim();
+                const normalizedSearchName = normalizeText(searchName);
+                
                 if (searchName) {
                     try {
                         const threadInfo = await api.getThreadInfo(threadID);
                         const { nicknames = {}, userInfo = [] } = threadInfo;
-                        let foundID = Object.keys(nicknames).find(id => nicknames[id].toLowerCase().includes(searchName));
+                        
+                        let foundID = Object.keys(nicknames).find(id => 
+                            normalizeText(nicknames[id]).includes(normalizedSearchName) ||
+                            nicknames[id].toLowerCase().includes(searchName.toLowerCase())
+                        );
+                        
                         if (!foundID) {
-                            const matchedUser = userInfo.find(u => (u.name && u.name.toLowerCase().includes(searchName)) || (u.firstName && u.firstName.toLowerCase().includes(searchName)));
+                            const matchedUser = userInfo.find(u => {
+                                const fullName = u.name || `${u.firstName || ''} ${u.lastName || ''}`.trim();
+                                const firstName = u.firstName || '';
+                                return (
+                                    (fullName && normalizeText(fullName).includes(normalizedSearchName)) ||
+                                    (firstName && normalizeText(firstName).includes(normalizedSearchName)) ||
+                                    (fullName && fullName.toLowerCase().includes(searchName.toLowerCase())) ||
+                                    (firstName && firstName.toLowerCase().includes(searchName.toLowerCase()))
+                                );
+                            });
                             if (matchedUser) foundID = matchedUser.id;
                         }
+                        
                         if (foundID) {
                             delete mentions[ghostID];
                             if (threadData && threadData.userInfo) {
                                 const dbUser = threadData.userInfo.find(u => u.id == foundID);
                                 mentions[foundID] = dbUser ? dbUser.name : rawTagText.replace("@", "");
                             } else {
-                                mentions[foundID] = rawTagText.replace("@", "");
+                                const userInfoEntry = threadInfo.userInfo.find(u => u.id == foundID);
+                                const fullName = userInfoEntry ? userInfoEntry.name || `${userInfoEntry.firstName || ''} ${userInfoEntry.lastName || ''}`.trim() : rawTagText.replace("@", "");
+                                mentions[foundID] = fullName;
                             }
                             event.mentions = mentions;
                         } else {
                             delete mentions[ghostID];
-                            event.mentions = {}; 
+                            event.mentions = {};
                         }
                     } catch (err) {
                         event.mentions = {};
@@ -247,7 +275,17 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             } else if (mentionIDs.length > 0) {
                 event.mentions = mentions;
             } else if (event.messageReply && event.messageReply.senderID) {
-                event.mentions = { [event.messageReply.senderID]: "" };
+                const replySenderID = event.messageReply.senderID;
+                if (threadData && threadData.userInfo) {
+                    const dbUser = threadData.userInfo.find(u => u.id == replySenderID);
+                    if (dbUser && dbUser.name) {
+                        event.mentions = { [replySenderID]: dbUser.name };
+                    } else {
+                        event.mentions = { [replySenderID]: "" };
+                    }
+                } else {
+                    event.mentions = { [replySenderID]: "" };
+                }
             }
 
             if (body.startsWith(prefix)) {
