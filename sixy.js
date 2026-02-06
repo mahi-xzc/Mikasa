@@ -12,7 +12,6 @@ function getRole(threadData, senderID) {
     const premiumUsers = config.premiumUsers || [];
     if (!senderID) return 0;
     const adminBox = threadData ? threadData.adminIDs || [] : [];
-
     if (devUsers.includes(senderID)) return 4;
     if (premiumUsers.includes(senderID)) {
         const userData = global.db.allUserData.find(u => u.userID == senderID);
@@ -143,6 +142,49 @@ function createGetText2(langCode, pathCustomLang, prefix, command) {
     return getText2;
 }
 
+function normalizeText(text) {
+    if (!text) return '';
+    return text
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9\s]/g, '')
+        .replace(/l{2,}/g, 'ii')
+        .replace(/i{2,}/g, 'ii')
+        .replace(/1{2,}/g, 'ii')
+        .trim();
+}
+
+function fixCommonTypos(text) {
+    return text
+        .toLowerCase()
+        .replace(/ll/g, 'ii')
+        .replace(/11/g, 'ii')
+        .replace(/ㅣㅣ/g, 'ii')
+        .replace(/ⅱ/g, 'ii')
+        .replace(/yeager/g, 'yeager')
+        .replace(/yager/g, 'yeager')
+        .replace(/yeger/g, 'yeager')
+        .replace(/yegar/g, 'yeager')
+        .replace(/duranto/g, 'duranto')
+        .replace(/duran to/g, 'duranto')
+        .replace(/duran/g, 'duranto')
+        .trim();
+}
+
+function calculateSimilarity(str1, str2) {
+    if (!str1 || !str2) return 0;
+    const s1 = normalizeText(str1);
+    const s2 = normalizeText(str2);
+    if (s1 === s2) return 1;
+    const longer = s1.length > s2.length ? s1 : s2;
+    const shorter = s1.length > s2.length ? s2 : s1;
+    if (longer.includes(shorter)) return shorter.length / longer.length;
+    const distance = levenshteinDistance(s1, s2);
+    const maxLength = Math.max(s1.length, s2.length);
+    return 1 - (distance / maxLength);
+}
+
 module.exports = function (api, threadModel, userModel, dashBoardModel, globalModel, usersData, threadsData, dashBoardData, globalData) {
     return async function (event, message) {
         const { utils, client, GoatBot } = global;
@@ -202,41 +244,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             const mentions = event.mentions || {};
             const mentionIDs = Object.keys(mentions);
 
-            function normalizeText(text) {
-                if (!text) return '';
-                return text
-                    .toLowerCase()
-                    .normalize('NFD')
-                    .replace(/[\u0300-\u036f]/g, '')
-                    .replace(/[^a-z0-9\s]/g, '')
-                    .trim();
-            }
-
-            function extractNameParts(fullName) {
-                const parts = fullName.trim().split(/\s+/);
-                const firstName = parts[0] || '';
-                const lastName = parts.slice(1).join(' ') || '';
-                return { firstName, lastName };
-            }
-
-            function fuzzyMatch(text1, text2, threshold = 0.7) {
-                if (!text1 || !text2) return 0;
-                const normalized1 = normalizeText(text1);
-                const normalized2 = normalizeText(text2);
-                if (normalized1 === normalized2) return 1;
-                
-                const longer = normalized1.length > normalized2.length ? normalized1 : normalized2;
-                const shorter = normalized1.length > normalized2.length ? normalized2 : normalized1;
-                
-                if (longer.includes(shorter)) return shorter.length / longer.length;
-                
-                let score = 0;
-                for (let i = 0; i < shorter.length; i++) {
-                    if (longer.includes(shorter[i])) score++;
-                }
-                return score / longer.length;
-            }
-
             if (threadData && threadData.userInfo) {
                 for (const id of mentionIDs) {
                     if (!id.startsWith("MENTION_") && !isNaN(id)) {
@@ -258,42 +265,25 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                     try {
                         const threadInfo = await api.getThreadInfo(threadID);
                         const { nicknames = {}, userInfo = [] } = threadInfo;
-                        const { firstName: searchFirstName, lastName: searchLastName } = extractNameParts(searchName);
+                        
+                        const fixedSearchName = fixCommonTypos(searchName);
+                        const normalizedSearchName = normalizeText(searchName);
                         
                         let foundID = null;
                         let bestMatchScore = 0;
-                        
-                        const searchNameLower = searchName.toLowerCase();
-                        const normalizedSearchName = normalizeText(searchName);
                         
                         for (const id of Object.keys(nicknames)) {
                             const nickname = nicknames[id] || "";
                             if (!nickname) continue;
                             
-                            const { firstName: nickFirstName, lastName: nickLastName } = extractNameParts(nickname);
-                            
-                            const nicknameLower = nickname.toLowerCase();
+                            const fixedNickname = fixCommonTypos(nickname);
                             const normalizedNickname = normalizeText(nickname);
                             
-                            let score = 0;
+                            let score = calculateSimilarity(nickname, searchName);
+                            score = Math.max(score, calculateSimilarity(fixedNickname, fixedSearchName));
+                            score = Math.max(score, calculateSimilarity(normalizedNickname, normalizedSearchName));
                             
-                            if (nicknameLower === searchNameLower || normalizedNickname === normalizedSearchName) {
-                                score = 1;
-                            } else if (nicknameLower.includes(searchNameLower) || searchNameLower.includes(nicknameLower)) {
-                                score = 0.9;
-                            } else if (nickFirstName.toLowerCase() === searchFirstName.toLowerCase() && 
-                                      (searchLastName === '' || nickLastName.toLowerCase().includes(searchLastName.toLowerCase()) || 
-                                       searchLastName.toLowerCase().includes(nickLastName.toLowerCase()))) {
-                                score = 0.85;
-                            } else {
-                                const fullMatchScore = fuzzyMatch(nickname, searchName);
-                                const firstNameScore = fuzzyMatch(nickFirstName, searchFirstName);
-                                const lastNameScore = searchLastName ? fuzzyMatch(nickLastName, searchLastName) : 0.5;
-                                
-                                score = Math.max(fullMatchScore, (firstNameScore * 0.6 + lastNameScore * 0.4));
-                            }
-                            
-                            if (score > bestMatchScore && score > 0.4) {
+                            if (score > bestMatchScore) {
                                 bestMatchScore = score;
                                 foundID = id;
                             }
@@ -304,40 +294,30 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                                 const fullName = user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim();
                                 if (!fullName) continue;
                                 
-                                const { firstName: userFirstName, lastName: userLastName } = extractNameParts(fullName);
-                                const firstName = user.firstName || '';
+                                const fixedFullName = fixCommonTypos(fullName);
+                                const normalizedFullName = normalizeText(fullName);
                                 
-                                const fullNameLower = fullName.toLowerCase();
-                                const firstNameLower = firstName.toLowerCase();
+                                let score = calculateSimilarity(fullName, searchName);
+                                score = Math.max(score, calculateSimilarity(fixedFullName, fixedSearchName));
+                                score = Math.max(score, calculateSimilarity(normalizedFullName, normalizedSearchName));
                                 
-                                let score = 0;
-                                
-                                if (fullNameLower === searchNameLower || normalizeText(fullName) === normalizedSearchName) {
-                                    score = 1;
-                                } else if (fullNameLower.includes(searchNameLower) || searchNameLower.includes(fullNameLower)) {
-                                    score = 0.9;
-                                } else if (firstNameLower === searchFirstName.toLowerCase() && 
-                                          (searchLastName === '' || userLastName?.toLowerCase().includes(searchLastName.toLowerCase()) || 
-                                           searchLastName.toLowerCase().includes(userLastName?.toLowerCase() || ''))) {
-                                    score = 0.85;
-                                } else if (userFirstName.toLowerCase() === searchFirstName.toLowerCase()) {
-                                    score = 0.8;
-                                } else {
-                                    const fullMatchScore = fuzzyMatch(fullName, searchName);
-                                    const firstNameMatchScore = fuzzyMatch(firstName, searchFirstName);
-                                    const lastNameMatchScore = searchLastName ? fuzzyMatch(userLastName || '', searchLastName) : 0.5;
-                                    
-                                    score = Math.max(fullMatchScore, (firstNameMatchScore * 0.6 + lastNameMatchScore * 0.4));
+                                if (user.firstName) {
+                                    const fixedFirstName = fixCommonTypos(user.firstName);
+                                    const normalizedFirstName = normalizeText(user.firstName);
+                                    const firstNameScore = calculateSimilarity(user.firstName, searchName);
+                                    score = Math.max(score, firstNameScore);
+                                    score = Math.max(score, calculateSimilarity(fixedFirstName, fixedSearchName));
+                                    score = Math.max(score, calculateSimilarity(normalizedFirstName, normalizedSearchName));
                                 }
                                 
-                                if (score > bestMatchScore && score > 0.4) {
+                                if (score > bestMatchScore) {
                                     bestMatchScore = score;
                                     foundID = user.id;
                                 }
                             }
                         }
                         
-                        if (foundID) {
+                        if (foundID && bestMatchScore >= 0.6) {
                             delete mentions[ghostID];
                             let finalName = rawTagText.replace("@", "");
                             
