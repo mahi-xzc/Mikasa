@@ -142,6 +142,63 @@ function createGetText2(langCode, pathCustomLang, prefix, command) {
     return getText2;
 }
 
+function normalizeName(name) {
+    if (!name) return '';
+    return name
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9\s]/g, '')
+        .replace(/ll/g, 'ii')
+        .replace(/11/g, 'ii')
+        .replace(/1l/g, 'ii')
+        .replace(/l1/g, 'ii')
+        .trim();
+}
+
+function extractNameParts(fullName) {
+    const parts = fullName.trim().split(/\s+/);
+    const firstName = parts[0] || '';
+    const middleName = parts.length > 2 ? parts[1] : '';
+    const lastName = parts.length > 1 ? parts[parts.length - 1] : '';
+    const symbols = fullName.replace(/[a-z0-9\s]/gi, '').trim();
+    return { firstName, middleName, lastName, symbols };
+}
+
+function matchName(searchName, targetName) {
+    const searchParts = extractNameParts(searchName);
+    const targetParts = extractNameParts(targetName);
+    
+    const searchNorm = normalizeName(searchName);
+    const targetNorm = normalizeName(targetName);
+    
+    if (searchNorm === targetNorm) return 3;
+    
+    const searchFirstNorm = normalizeName(searchParts.firstName);
+    const targetFirstNorm = normalizeName(targetParts.firstName);
+    
+    if (searchFirstNorm === targetFirstNorm) {
+        const searchLastNorm = normalizeName(searchParts.lastName);
+        const targetLastNorm = normalizeName(targetParts.lastName);
+        
+        if (searchLastNorm && targetLastNorm && searchLastNorm === targetLastNorm) return 3;
+        
+        const searchMiddleNorm = normalizeName(searchParts.middleName);
+        const targetMiddleNorm = normalizeName(targetParts.middleName);
+        
+        if (searchMiddleNorm && targetMiddleNorm && searchMiddleNorm === targetMiddleNorm) return 2;
+        
+        const searchSymbols = searchParts.symbols;
+        const targetSymbols = targetParts.symbols;
+        
+        if (searchSymbols && targetSymbols && searchSymbols === targetSymbols) return 2;
+        
+        return 1;
+    }
+    
+    return 0;
+}
+
 module.exports = function (api, threadModel, userModel, dashBoardModel, globalModel, usersData, threadsData, dashBoardData, globalData) {
     return async function (event, message) {
         const { utils, client, GoatBot } = global;
@@ -201,66 +258,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             const mentions = event.mentions || {};
             const mentionIDs = Object.keys(mentions);
 
-            function cleanName(name) {
-                if (!name) return '';
-                return name
-                    .toLowerCase()
-                    .normalize('NFD')
-                    .replace(/[\u0300-\u036f]/g, '')
-                    .replace(/[^a-z0-9\s]/g, '')
-                    .trim();
-            }
-
-            function fixRomanNumerals(text) {
-                return text
-                    .toLowerCase()
-                    .replace(/ll/g, 'ii')
-                    .replace(/11/g, 'ii')
-                    .replace(/1l/g, 'ii')
-                    .replace(/l1/g, 'ii')
-                    .replace(/ㅣㅣ/g, 'ii')
-                    .replace(/ⅱ/g, 'ii')
-                    .trim();
-            }
-
-            function exactMatch(searchName, targetName) {
-                if (!searchName || !targetName) return false;
-                const cleanSearch = cleanName(searchName);
-                const cleanTarget = cleanName(targetName);
-                const fixedSearch = fixRomanNumerals(searchName);
-                const fixedTarget = fixRomanNumerals(targetName);
-                
-                if (cleanSearch === cleanTarget) return true;
-                if (fixedSearch === fixedTarget) return true;
-                if (searchName.toLowerCase() === targetName.toLowerCase()) return true;
-                
-                return false;
-            }
-
-            function partialMatch(searchName, targetName) {
-                if (!searchName || !targetName) return false;
-                const searchLower = searchName.toLowerCase();
-                const targetLower = targetName.toLowerCase();
-                
-                if (targetLower.includes(searchLower)) return true;
-                if (searchLower.includes(targetLower)) return true;
-                
-                const searchParts = searchName.split(/\s+/);
-                const targetParts = targetName.split(/\s+/);
-                
-                for (const searchPart of searchParts) {
-                    for (const targetPart of targetParts) {
-                        const cleanSearchPart = cleanName(searchPart);
-                        const cleanTargetPart = cleanName(targetPart);
-                        if (cleanSearchPart && cleanTargetPart && cleanTargetPart.includes(cleanSearchPart)) {
-                            return true;
-                        }
-                    }
-                }
-                
-                return false;
-            }
-
             if (threadData && threadData.userInfo) {
                 for (const id of mentionIDs) {
                     if (!id.startsWith("MENTION_") && !isNaN(id)) {
@@ -284,14 +281,27 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                         const { nicknames = {}, userInfo = [] } = threadInfo;
                         
                         let foundID = null;
+                        let bestMatchLevel = 0;
+                        
+                        const searchParts = extractNameParts(searchName);
+                        const searchFirstNorm = normalizeName(searchParts.firstName);
+                        
+                        let firstNameMatches = [];
                         
                         for (const id of Object.keys(nicknames)) {
                             const nickname = nicknames[id] || "";
                             if (!nickname) continue;
                             
-                            if (exactMatch(searchName, nickname)) {
+                            const matchLevel = matchName(searchName, nickname);
+                            if (matchLevel > bestMatchLevel) {
+                                bestMatchLevel = matchLevel;
                                 foundID = id;
-                                break;
+                            }
+                            
+                            const nickParts = extractNameParts(nickname);
+                            const nickFirstNorm = normalizeName(nickParts.firstName);
+                            if (nickFirstNorm === searchFirstNorm) {
+                                firstNameMatches.push({ id, name: nickname });
                             }
                         }
                         
@@ -300,38 +310,42 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                                 const fullName = user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim();
                                 if (!fullName) continue;
                                 
-                                if (exactMatch(searchName, fullName)) {
+                                const matchLevel = matchName(searchName, fullName);
+                                if (matchLevel > bestMatchLevel) {
+                                    bestMatchLevel = matchLevel;
                                     foundID = user.id;
-                                    break;
                                 }
-                            }
-                        }
-                        
-                        if (!foundID) {
-                            for (const id of Object.keys(nicknames)) {
-                                const nickname = nicknames[id] || "";
-                                if (!nickname) continue;
                                 
-                                if (partialMatch(searchName, nickname)) {
-                                    foundID = id;
-                                    break;
+                                const nameParts = extractNameParts(fullName);
+                                const nameFirstNorm = normalizeName(nameParts.firstName);
+                                if (nameFirstNorm === searchFirstNorm) {
+                                    firstNameMatches.push({ id: user.id, name: fullName });
                                 }
                             }
                         }
                         
-                        if (!foundID && userInfo.length > 0) {
-                            for (const user of userInfo) {
-                                const fullName = user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim();
-                                if (!fullName) continue;
-                                
-                                if (partialMatch(searchName, fullName)) {
-                                    foundID = user.id;
-                                    break;
+                        if (firstNameMatches.length > 1) {
+                            let bestID = null;
+                            let highestLevel = 0;
+                            
+                            for (const match of firstNameMatches) {
+                                const matchLevel = matchName(searchName, match.name);
+                                if (matchLevel > highestLevel) {
+                                    highestLevel = matchLevel;
+                                    bestID = match.id;
                                 }
                             }
+                            
+                            if (bestID && highestLevel > 0) {
+                                foundID = bestID;
+                                bestMatchLevel = highestLevel;
+                            }
+                        } else if (firstNameMatches.length === 1) {
+                            foundID = firstNameMatches[0].id;
+                            bestMatchLevel = 1;
                         }
                         
-                        if (foundID) {
+                        if (foundID && bestMatchLevel > 0) {
                             delete mentions[ghostID];
                             let finalName = rawTagText.replace("@", "");
                             
