@@ -142,35 +142,47 @@ function createGetText2(langCode, pathCustomLang, prefix, command) {
     return getText2;
 }
 
-function normalizeName(name) {
+function normalizeNameForStylizedMatch(name) {
     if (!name) return "";
     return name
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .trim()
-        .toLowerCase();
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
 }
 
-function getFirstLast(fullName) {
-    const parts = fullName.trim().split(/\s+/);
-    return {
-        first: normalizeName(parts[0] || ""),
-        last: normalizeName(parts[parts.length - 1] || "")
-    };
-}
-
-function findBestMatch(searchName, userList) {
-    const search = getFirstLast(searchName);
-    let matchedUsers = [];
-    for (const user of userList) {
-        const fullName = user.name || "";
-        if (!fullName.trim()) continue;
-        const target = getFirstLast(fullName);
-        if (search.first === target.first && search.last === target.last) {
-            matchedUsers.push(user);
+function stylizedNameMatch(searchName, targetName) {
+    if (!searchName || !targetName) return false;
+    
+    const searchLower = searchName.toLowerCase();
+    const targetLower = targetName.toLowerCase();
+    
+    if (searchLower === targetLower) return true;
+    
+    const searchNorm = normalizeNameForStylizedMatch(searchName);
+    const targetNorm = normalizeNameForStylizedMatch(targetName);
+    
+    if (searchNorm === targetNorm) return true;
+    
+    const searchParts = searchLower.split(/\s+/);
+    const targetParts = targetLower.split(/\s+/);
+    
+    let allPartsMatch = true;
+    for (const searchPart of searchParts) {
+        let found = false;
+        for (const targetPart of targetParts) {
+            if (targetPart.includes(searchPart) || searchPart.includes(targetPart)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            allPartsMatch = false;
+            break;
         }
     }
-    return matchedUsers.length ? matchedUsers : null;
+    
+    return allPartsMatch;
 }
 
 module.exports = function (api, threadModel, userModel, dashBoardModel, globalModel, usersData, threadsData, dashBoardData, globalData) {
@@ -254,44 +266,43 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                         const threadInfo = await api.getThreadInfo(threadID);
                         const { nicknames = {}, userInfo = [] } = threadInfo;
                         
-                        const usersWithNames = [];
+                        let foundID = null;
                         
                         for (const id of Object.keys(nicknames)) {
                             const nickname = nicknames[id] || "";
-                            if (nickname) {
-                                usersWithNames.push({ id, name: nickname });
+                            if (stylizedNameMatch(searchName, nickname)) {
+                                foundID = id;
+                                break;
                             }
                         }
                         
-                        if (userInfo.length > 0) {
+                        if (!foundID && userInfo.length > 0) {
                             for (const user of userInfo) {
                                 const fullName = user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim();
-                                if (fullName) {
-                                    usersWithNames.push({ id: user.id, name: fullName });
+                                if (stylizedNameMatch(searchName, fullName)) {
+                                    foundID = user.id;
+                                    break;
                                 }
                             }
                         }
                         
-                        const matches = findBestMatch(searchName, usersWithNames);
-                        
-                        if (matches && matches.length > 0) {
+                        if (foundID) {
                             delete mentions[ghostID];
-                            const foundUser = matches[0];
                             let finalName = rawTagText.replace("@", "");
                             
-                            const threadUser = userInfo.find(u => u.id == foundUser.id);
+                            const threadUser = userInfo.find(u => u.id == foundID);
                             if (threadUser) {
                                 finalName = threadUser.name || `${threadUser.firstName || ''} ${threadUser.lastName || ''}`.trim() || finalName;
                             }
                             
                             if (threadData && threadData.userInfo) {
-                                const dbUser = threadData.userInfo.find(u => u.id == foundUser.id);
+                                const dbUser = threadData.userInfo.find(u => u.id == foundID);
                                 if (dbUser && dbUser.name) {
                                     finalName = dbUser.name;
                                 }
                             }
                             
-                            mentions[foundUser.id] = finalName;
+                            mentions[foundID] = finalName;
                             event.mentions = mentions;
                         } else {
                             delete mentions[ghostID];
