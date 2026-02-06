@@ -142,49 +142,6 @@ function createGetText2(langCode, pathCustomLang, prefix, command) {
     return getText2;
 }
 
-function normalizeText(text) {
-    if (!text) return '';
-    return text
-        .toLowerCase()
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .replace(/[^a-z0-9\s]/g, '')
-        .replace(/l{2,}/g, 'ii')
-        .replace(/i{2,}/g, 'ii')
-        .replace(/1{2,}/g, 'ii')
-        .trim();
-}
-
-function fixCommonTypos(text) {
-    return text
-        .toLowerCase()
-        .replace(/ll/g, 'ii')
-        .replace(/11/g, 'ii')
-        .replace(/ㅣㅣ/g, 'ii')
-        .replace(/ⅱ/g, 'ii')
-        .replace(/yeager/g, 'yeager')
-        .replace(/yager/g, 'yeager')
-        .replace(/yeger/g, 'yeager')
-        .replace(/yegar/g, 'yeager')
-        .replace(/duranto/g, 'duranto')
-        .replace(/duran to/g, 'duranto')
-        .replace(/duran/g, 'duranto')
-        .trim();
-}
-
-function calculateSimilarity(str1, str2) {
-    if (!str1 || !str2) return 0;
-    const s1 = normalizeText(str1);
-    const s2 = normalizeText(str2);
-    if (s1 === s2) return 1;
-    const longer = s1.length > s2.length ? s1 : s2;
-    const shorter = s1.length > s2.length ? s2 : s1;
-    if (longer.includes(shorter)) return shorter.length / longer.length;
-    const distance = levenshteinDistance(s1, s2);
-    const maxLength = Math.max(s1.length, s2.length);
-    return 1 - (distance / maxLength);
-}
-
 module.exports = function (api, threadModel, userModel, dashBoardModel, globalModel, usersData, threadsData, dashBoardData, globalData) {
     return async function (event, message) {
         const { utils, client, GoatBot } = global;
@@ -244,6 +201,66 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             const mentions = event.mentions || {};
             const mentionIDs = Object.keys(mentions);
 
+            function cleanName(name) {
+                if (!name) return '';
+                return name
+                    .toLowerCase()
+                    .normalize('NFD')
+                    .replace(/[\u0300-\u036f]/g, '')
+                    .replace(/[^a-z0-9\s]/g, '')
+                    .trim();
+            }
+
+            function fixRomanNumerals(text) {
+                return text
+                    .toLowerCase()
+                    .replace(/ll/g, 'ii')
+                    .replace(/11/g, 'ii')
+                    .replace(/1l/g, 'ii')
+                    .replace(/l1/g, 'ii')
+                    .replace(/ㅣㅣ/g, 'ii')
+                    .replace(/ⅱ/g, 'ii')
+                    .trim();
+            }
+
+            function exactMatch(searchName, targetName) {
+                if (!searchName || !targetName) return false;
+                const cleanSearch = cleanName(searchName);
+                const cleanTarget = cleanName(targetName);
+                const fixedSearch = fixRomanNumerals(searchName);
+                const fixedTarget = fixRomanNumerals(targetName);
+                
+                if (cleanSearch === cleanTarget) return true;
+                if (fixedSearch === fixedTarget) return true;
+                if (searchName.toLowerCase() === targetName.toLowerCase()) return true;
+                
+                return false;
+            }
+
+            function partialMatch(searchName, targetName) {
+                if (!searchName || !targetName) return false;
+                const searchLower = searchName.toLowerCase();
+                const targetLower = targetName.toLowerCase();
+                
+                if (targetLower.includes(searchLower)) return true;
+                if (searchLower.includes(targetLower)) return true;
+                
+                const searchParts = searchName.split(/\s+/);
+                const targetParts = targetName.split(/\s+/);
+                
+                for (const searchPart of searchParts) {
+                    for (const targetPart of targetParts) {
+                        const cleanSearchPart = cleanName(searchPart);
+                        const cleanTargetPart = cleanName(targetPart);
+                        if (cleanSearchPart && cleanTargetPart && cleanTargetPart.includes(cleanSearchPart)) {
+                            return true;
+                        }
+                    }
+                }
+                
+                return false;
+            }
+
             if (threadData && threadData.userInfo) {
                 for (const id of mentionIDs) {
                     if (!id.startsWith("MENTION_") && !isNaN(id)) {
@@ -266,26 +283,15 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                         const threadInfo = await api.getThreadInfo(threadID);
                         const { nicknames = {}, userInfo = [] } = threadInfo;
                         
-                        const fixedSearchName = fixCommonTypos(searchName);
-                        const normalizedSearchName = normalizeText(searchName);
-                        
                         let foundID = null;
-                        let bestMatchScore = 0;
                         
                         for (const id of Object.keys(nicknames)) {
                             const nickname = nicknames[id] || "";
                             if (!nickname) continue;
                             
-                            const fixedNickname = fixCommonTypos(nickname);
-                            const normalizedNickname = normalizeText(nickname);
-                            
-                            let score = calculateSimilarity(nickname, searchName);
-                            score = Math.max(score, calculateSimilarity(fixedNickname, fixedSearchName));
-                            score = Math.max(score, calculateSimilarity(normalizedNickname, normalizedSearchName));
-                            
-                            if (score > bestMatchScore) {
-                                bestMatchScore = score;
+                            if (exactMatch(searchName, nickname)) {
                                 foundID = id;
+                                break;
                             }
                         }
                         
@@ -294,30 +300,38 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                                 const fullName = user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim();
                                 if (!fullName) continue;
                                 
-                                const fixedFullName = fixCommonTypos(fullName);
-                                const normalizedFullName = normalizeText(fullName);
-                                
-                                let score = calculateSimilarity(fullName, searchName);
-                                score = Math.max(score, calculateSimilarity(fixedFullName, fixedSearchName));
-                                score = Math.max(score, calculateSimilarity(normalizedFullName, normalizedSearchName));
-                                
-                                if (user.firstName) {
-                                    const fixedFirstName = fixCommonTypos(user.firstName);
-                                    const normalizedFirstName = normalizeText(user.firstName);
-                                    const firstNameScore = calculateSimilarity(user.firstName, searchName);
-                                    score = Math.max(score, firstNameScore);
-                                    score = Math.max(score, calculateSimilarity(fixedFirstName, fixedSearchName));
-                                    score = Math.max(score, calculateSimilarity(normalizedFirstName, normalizedSearchName));
-                                }
-                                
-                                if (score > bestMatchScore) {
-                                    bestMatchScore = score;
+                                if (exactMatch(searchName, fullName)) {
                                     foundID = user.id;
+                                    break;
                                 }
                             }
                         }
                         
-                        if (foundID && bestMatchScore >= 0.6) {
+                        if (!foundID) {
+                            for (const id of Object.keys(nicknames)) {
+                                const nickname = nicknames[id] || "";
+                                if (!nickname) continue;
+                                
+                                if (partialMatch(searchName, nickname)) {
+                                    foundID = id;
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        if (!foundID && userInfo.length > 0) {
+                            for (const user of userInfo) {
+                                const fullName = user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim();
+                                if (!fullName) continue;
+                                
+                                if (partialMatch(searchName, fullName)) {
+                                    foundID = user.id;
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        if (foundID) {
                             delete mentions[ghostID];
                             let finalName = rawTagText.replace("@", "");
                             
