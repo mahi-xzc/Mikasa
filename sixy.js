@@ -142,63 +142,6 @@ function createGetText2(langCode, pathCustomLang, prefix, command) {
     return getText2;
 }
 
-function normalizeName(name) {
-    if (!name) return '';
-    return name
-        .toLowerCase()
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .replace(/[^a-z0-9\s]/g, '')
-        .replace(/ll/g, 'ii')
-        .replace(/11/g, 'ii')
-        .replace(/1l/g, 'ii')
-        .replace(/l1/g, 'ii')
-        .trim();
-}
-
-function extractNameParts(fullName) {
-    const parts = fullName.trim().split(/\s+/);
-    const firstName = parts[0] || '';
-    const middleName = parts.length > 2 ? parts[1] : '';
-    const lastName = parts.length > 1 ? parts[parts.length - 1] : '';
-    const symbols = fullName.replace(/[a-z0-9\s]/gi, '').trim();
-    return { firstName, middleName, lastName, symbols };
-}
-
-function matchName(searchName, targetName) {
-    const searchParts = extractNameParts(searchName);
-    const targetParts = extractNameParts(targetName);
-    
-    const searchNorm = normalizeName(searchName);
-    const targetNorm = normalizeName(targetName);
-    
-    if (searchNorm === targetNorm) return 3;
-    
-    const searchFirstNorm = normalizeName(searchParts.firstName);
-    const targetFirstNorm = normalizeName(targetParts.firstName);
-    
-    if (searchFirstNorm === targetFirstNorm) {
-        const searchLastNorm = normalizeName(searchParts.lastName);
-        const targetLastNorm = normalizeName(targetParts.lastName);
-        
-        if (searchLastNorm && targetLastNorm && searchLastNorm === targetLastNorm) return 3;
-        
-        const searchMiddleNorm = normalizeName(searchParts.middleName);
-        const targetMiddleNorm = normalizeName(targetParts.middleName);
-        
-        if (searchMiddleNorm && targetMiddleNorm && searchMiddleNorm === targetMiddleNorm) return 2;
-        
-        const searchSymbols = searchParts.symbols;
-        const targetSymbols = targetParts.symbols;
-        
-        if (searchSymbols && targetSymbols && searchSymbols === targetSymbols) return 2;
-        
-        return 1;
-    }
-    
-    return 0;
-}
-
 module.exports = function (api, threadModel, userModel, dashBoardModel, globalModel, usersData, threadsData, dashBoardData, globalData) {
     return async function (event, message) {
         const { utils, client, GoatBot } = global;
@@ -258,6 +201,38 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             const mentions = event.mentions || {};
             const mentionIDs = Object.keys(mentions);
 
+            function normalizeName(name) {
+                if (!name) return '';
+                return name
+                    .toLowerCase()
+                    .normalize('NFD')
+                    .replace(/[\u0300-\u036f]/g, '')
+                    .replace(/[^a-z0-9\s]/g, '')
+                    .trim();
+            }
+
+            function isExactFullNameMatch(searchName, targetName) {
+                if (!searchName || !targetName) return false;
+                
+                const searchNorm = normalizeName(searchName);
+                const targetNorm = normalizeName(targetName);
+                
+                if (searchNorm === targetNorm) return true;
+                
+                const searchParts = searchName.toLowerCase().split(/\s+/);
+                const targetParts = targetName.toLowerCase().split(/\s+/);
+                
+                if (searchParts.length !== targetParts.length) return false;
+                
+                for (let i = 0; i < searchParts.length; i++) {
+                    const searchPartNorm = normalizeName(searchParts[i]);
+                    const targetPartNorm = normalizeName(targetParts[i]);
+                    if (searchPartNorm !== targetPartNorm) return false;
+                }
+                
+                return true;
+            }
+
             if (threadData && threadData.userInfo) {
                 for (const id of mentionIDs) {
                     if (!id.startsWith("MENTION_") && !isNaN(id)) {
@@ -281,27 +256,14 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                         const { nicknames = {}, userInfo = [] } = threadInfo;
                         
                         let foundID = null;
-                        let bestMatchLevel = 0;
-                        
-                        const searchParts = extractNameParts(searchName);
-                        const searchFirstNorm = normalizeName(searchParts.firstName);
-                        
-                        let firstNameMatches = [];
                         
                         for (const id of Object.keys(nicknames)) {
                             const nickname = nicknames[id] || "";
                             if (!nickname) continue;
                             
-                            const matchLevel = matchName(searchName, nickname);
-                            if (matchLevel > bestMatchLevel) {
-                                bestMatchLevel = matchLevel;
+                            if (isExactFullNameMatch(searchName, nickname)) {
                                 foundID = id;
-                            }
-                            
-                            const nickParts = extractNameParts(nickname);
-                            const nickFirstNorm = normalizeName(nickParts.firstName);
-                            if (nickFirstNorm === searchFirstNorm) {
-                                firstNameMatches.push({ id, name: nickname });
+                                break;
                             }
                         }
                         
@@ -310,42 +272,14 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                                 const fullName = user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim();
                                 if (!fullName) continue;
                                 
-                                const matchLevel = matchName(searchName, fullName);
-                                if (matchLevel > bestMatchLevel) {
-                                    bestMatchLevel = matchLevel;
+                                if (isExactFullNameMatch(searchName, fullName)) {
                                     foundID = user.id;
-                                }
-                                
-                                const nameParts = extractNameParts(fullName);
-                                const nameFirstNorm = normalizeName(nameParts.firstName);
-                                if (nameFirstNorm === searchFirstNorm) {
-                                    firstNameMatches.push({ id: user.id, name: fullName });
+                                    break;
                                 }
                             }
                         }
                         
-                        if (firstNameMatches.length > 1) {
-                            let bestID = null;
-                            let highestLevel = 0;
-                            
-                            for (const match of firstNameMatches) {
-                                const matchLevel = matchName(searchName, match.name);
-                                if (matchLevel > highestLevel) {
-                                    highestLevel = matchLevel;
-                                    bestID = match.id;
-                                }
-                            }
-                            
-                            if (bestID && highestLevel > 0) {
-                                foundID = bestID;
-                                bestMatchLevel = highestLevel;
-                            }
-                        } else if (firstNameMatches.length === 1) {
-                            foundID = firstNameMatches[0].id;
-                            bestMatchLevel = 1;
-                        }
-                        
-                        if (foundID && bestMatchLevel > 0) {
+                        if (foundID) {
                             delete mentions[ghostID];
                             let finalName = rawTagText.replace("@", "");
                             
