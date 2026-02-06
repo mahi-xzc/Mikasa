@@ -211,26 +211,99 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                     .trim();
             }
 
-            function isExactFullNameMatch(searchName, targetName) {
-                if (!searchName || !targetName) return false;
+            function extractNameParts(fullName) {
+                const parts = fullName.trim().split(/\s+/);
+                return {
+                    firstName: parts[0] || '',
+                    lastName: parts.length > 1 ? parts[parts.length - 1] : '',
+                    allParts: parts
+                };
+            }
+
+            function findBestMatch(searchName, userList) {
+                const searchParts = extractNameParts(searchName);
+                const searchFirstNorm = normalizeName(searchParts.firstName);
+                const searchLastNorm = normalizeName(searchParts.lastName);
+                const searchAllParts = searchParts.allParts.map(p => normalizeName(p));
                 
-                const searchNorm = normalizeName(searchName);
-                const targetNorm = normalizeName(targetName);
+                let exactMatches = [];
+                let firstNameMatches = [];
+                let partialMatches = [];
                 
-                if (searchNorm === targetNorm) return true;
-                
-                const searchParts = searchName.toLowerCase().split(/\s+/);
-                const targetParts = targetName.toLowerCase().split(/\s+/);
-                
-                if (searchParts.length !== targetParts.length) return false;
-                
-                for (let i = 0; i < searchParts.length; i++) {
-                    const searchPartNorm = normalizeName(searchParts[i]);
-                    const targetPartNorm = normalizeName(targetParts[i]);
-                    if (searchPartNorm !== targetPartNorm) return false;
+                for (const user of userList) {
+                    const userName = user.name || '';
+                    if (!userName) continue;
+                    
+                    const userParts = extractNameParts(userName);
+                    const userFirstNorm = normalizeName(userParts.firstName);
+                    const userLastNorm = normalizeName(userParts.lastName);
+                    const userAllParts = userParts.allParts.map(p => normalizeName(p));
+                    
+                    if (searchAllParts.length === userAllParts.length) {
+                        let exactMatch = true;
+                        for (let i = 0; i < searchAllParts.length; i++) {
+                            if (searchAllParts[i] !== userAllParts[i]) {
+                                exactMatch = false;
+                                break;
+                            }
+                        }
+                        if (exactMatch) {
+                            exactMatches.push(user);
+                            continue;
+                        }
+                    }
+                    
+                    if (searchFirstNorm === userFirstNorm && searchLastNorm === userLastNorm) {
+                        exactMatches.push(user);
+                        continue;
+                    }
+                    
+                    if (searchFirstNorm === userFirstNorm) {
+                        if (searchLastNorm && userLastNorm) {
+                            const distance = levenshteinDistance(searchLastNorm, userLastNorm);
+                            if (distance <= 2) {
+                                exactMatches.push(user);
+                                continue;
+                            }
+                        }
+                        firstNameMatches.push(user);
+                        continue;
+                    }
+                    
+                    let hasAllParts = true;
+                    for (const searchPart of searchAllParts) {
+                        let found = false;
+                        for (const userPart of userAllParts) {
+                            if (searchPart === userPart) {
+                                found = true;
+                                break;
+                            }
+                        }
+                        if (!found) {
+                            hasAllParts = false;
+                            break;
+                        }
+                    }
+                    if (hasAllParts) {
+                        partialMatches.push(user);
+                    }
                 }
                 
-                return true;
+                if (exactMatches.length > 0) return exactMatches[0];
+                if (firstNameMatches.length === 1) return firstNameMatches[0];
+                if (firstNameMatches.length > 1 && searchLastNorm) {
+                    for (const user of firstNameMatches) {
+                        const userParts = extractNameParts(user.name);
+                        const userLastNorm = normalizeName(userParts.lastName);
+                        if (userLastNorm && searchLastNorm === userLastNorm) {
+                            return user;
+                        }
+                    }
+                }
+                if (partialMatches.length > 0) return partialMatches[0];
+                if (firstNameMatches.length > 0) return firstNameMatches[0];
+                
+                return null;
             }
 
             if (threadData && threadData.userInfo) {
@@ -255,52 +328,43 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                         const threadInfo = await api.getThreadInfo(threadID);
                         const { nicknames = {}, userInfo = [] } = threadInfo;
                         
-                        let foundID = null;
+                        const usersWithNames = [];
                         
                         for (const id of Object.keys(nicknames)) {
                             const nickname = nicknames[id] || "";
-                            if (!nickname) continue;
-                            
-                            if (isExactFullNameMatch(searchName, nickname)) {
-                                foundID = id;
-                                break;
+                            if (nickname) {
+                                usersWithNames.push({ id, name: nickname });
                             }
                         }
                         
-                        if (!foundID && userInfo.length > 0) {
+                        if (userInfo.length > 0) {
                             for (const user of userInfo) {
                                 const fullName = user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim();
-                                if (!fullName) continue;
-                                
-                                if (isExactFullNameMatch(searchName, fullName)) {
-                                    foundID = user.id;
-                                    break;
+                                if (fullName) {
+                                    usersWithNames.push({ id: user.id, name: fullName });
                                 }
                             }
                         }
                         
-                        if (foundID) {
+                        const bestMatch = findBestMatch(searchName, usersWithNames);
+                        
+                        if (bestMatch) {
                             delete mentions[ghostID];
                             let finalName = rawTagText.replace("@", "");
                             
+                            const threadUser = userInfo.find(u => u.id == bestMatch.id);
+                            if (threadUser) {
+                                finalName = threadUser.name || `${threadUser.firstName || ''} ${threadUser.lastName || ''}`.trim() || finalName;
+                            }
+                            
                             if (threadData && threadData.userInfo) {
-                                const dbUser = threadData.userInfo.find(u => u.id == foundID);
+                                const dbUser = threadData.userInfo.find(u => u.id == bestMatch.id);
                                 if (dbUser && dbUser.name) {
                                     finalName = dbUser.name;
-                                } else {
-                                    const threadUser = userInfo.find(u => u.id == foundID);
-                                    if (threadUser) {
-                                        finalName = threadUser.name || `${threadUser.firstName || ''} ${threadUser.lastName || ''}`.trim() || finalName;
-                                    }
-                                }
-                            } else {
-                                const threadUser = userInfo.find(u => u.id == foundID);
-                                if (threadUser) {
-                                    finalName = threadUser.name || `${threadUser.firstName || ''} ${threadUser.lastName || ''}`.trim() || finalName;
                                 }
                             }
                             
-                            mentions[foundID] = finalName;
+                            mentions[bestMatch.id] = finalName;
                             event.mentions = mentions;
                         } else {
                             delete mentions[ghostID];
