@@ -21,10 +21,7 @@ function getText(type, reason, time, targetID, lang) {
 }
 
 function replaceShortcutInLang(text, prefix, commandName) {
-    return text
-        .replace(/\{(?:p|prefix)\}/g, prefix)
-        .replace(/\{(?:n|name)\}/g, commandName)
-        .replace(/\{pn\}/g, `${prefix}${commandName}`);
+    return text.replace(/\{(?:p|prefix)\}/g, prefix).replace(/\{(?:n|name)\}/g, commandName).replace(/\{pn\}/g, `${prefix}${commandName}`);
 }
 
 function getRoleConfig(utils, command, isGroup, threadData, commandName) {
@@ -88,6 +85,10 @@ function createGetText2(langCode, pathCustomLang, prefix, command) {
     return () => {};
 }
 
+function normalizeName(name) {
+    return name ? name.toLowerCase().replace(/[^a-z0-9]/g, "") : "";
+}
+
 module.exports = function (api, threadModel, userModel, dashBoardModel, globalModel, usersData, threadsData, dashBoardData, globalData) {
     return async function (event, message) {
         const { utils, client, GoatBot } = global;
@@ -95,40 +96,46 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
         const { config, configCommands: { envGlobal, envCommands, envEvents } } = GoatBot;
         const { autoRefreshThreadInfoFirstTime } = config.database;
         let { hideNotiMessage = {} } = config;
-        const { body, threadID, isGroup } = event;
+        const { body, messageID, threadID, isGroup } = event;
 
-        // --- MENTION FIX & INIT START ---
-        // Ensure mentions is an object (FCA utils.js already parses it, but we safeguard it)
-        event.mentions = event.mentions || {};
-        
-        // Check if threadID exists
         if (!threadID) return;
-
         const senderID = event.userID || event.senderID || event.author;
+        
         let threadData = global.db.allThreadData.find(t => t.threadID == threadID);
         let userData = global.db.allUserData.find(u => u.userID == senderID);
 
-        // Auto Create User Data if not exists
         if (!userData && !isNaN(senderID)) userData = await usersData.create(senderID);
-
-        // Auto Create Thread Data if not exists
         if (!threadData && !isNaN(threadID)) {
             if (global.temp.createThreadDataError.includes(threadID)) return;
             threadData = await threadsData.create(threadID);
             global.db.receivedTheFirstMessage[threadID] = true;
         } else {
-            // Refresh info on first start if configured
             if (autoRefreshThreadInfoFirstTime === true && !global.db.receivedTheFirstMessage[threadID]) {
                 global.db.receivedTheFirstMessage[threadID] = true;
                 await threadsData.refreshInfo(threadID);
             }
         }
 
+        if (threadData && threadData.userInfo && event.mentions) {
+            const mentionIDs = Object.keys(event.mentions);
+            for (const id of mentionIDs) {
+                if (id.startsWith("MENTION_")) {
+                    const tagName = event.mentions[id].replace("@", "");
+                    const targetInfo = threadData.userInfo.find(u => 
+                        normalizeName(u.name) === normalizeName(tagName) || 
+                        normalizeName(u.nickname) === normalizeName(tagName)
+                    );
+                    if (targetInfo) {
+                        delete event.mentions[id];
+                        event.mentions[targetInfo.id] = event.mentions[id] || "@" + targetInfo.name;
+                    }
+                }
+            }
+        }
+
         if (typeof threadData.settings.hideNotiMessage == "object") hideNotiMessage = threadData.settings.hideNotiMessage;
         const prefix = getPrefix(threadID);
         const role = getRole(threadData, senderID);
-        // --- INIT END ---
-
         const parameters = {
             api, usersData, threadsData, message, event, userModel, threadModel, prefix, dashBoardModel, globalModel, dashBoardData, globalData, envCommands, envEvents, envGlobal, role,
             removeCommandNameFromBody: function removeCommandNameFromBody(body_, prefix_, commandName_) {
@@ -435,18 +442,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
         async function read_receipt() { }
         async function typ() { }
 
-        return {
-            onAnyEvent,
-            onFirstChat,
-            onChat,
-            onStart,
-            onReaction,
-            onReply,
-            onEvent,
-            handlerEvent,
-            presence,
-            read_receipt,
-            typ
-        };
+        return { onAnyEvent, onFirstChat, onChat, onStart, onReaction, onReply, onEvent, handlerEvent, presence, read_receipt, typ };
     };
 };
