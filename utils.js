@@ -522,8 +522,8 @@ function formatCookie(arr, url) {
 function formatThread(data) {
     return {
         threadID: formatID(data.thread_fbid.toString()),
-        participants: data.participants.map(formatID),
-        participantIDs: data.participants.map(formatID),
+        participants: (data.participants || []).map(formatID),
+        participantIDs: (data.participants || []).map(formatID),
         name: data.name,
         nicknames: data.custom_nickname,
         snippet: data.snippet,
@@ -671,6 +671,6 @@ module.exports = {
     getAdminTextMessageType,
     setProxy,
     getFroms,
-    _formatAttachment, // Ensure this is exported for listenMqtt.js
-    formatAttachment   // And this one too
+    _formatAttachment, 
+    formatAttachment   
 };
