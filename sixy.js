@@ -6,42 +6,10 @@ function getType(obj) {
 }
 
 function getRole(threadData, senderID) {
-    const config = global.GoatBot.config;
-    const adminBot = config.adminBot || [];
-    const devUsers = config.devUsers || [];
-    const premiumUsers = config.premiumUsers || [];
+    const adminBot = global.GoatBot.config.adminBot || [];
     if (!senderID) return 0;
     const adminBox = threadData ? threadData.adminIDs || [] : [];
-    if (devUsers.includes(senderID)) return 4;
-    if (premiumUsers.includes(senderID)) {
-        const userData = global.db.allUserData.find(u => u.userID == senderID);
-        if (userData && userData.data && userData.data.premiumExpireTime) {
-            if (userData.data.premiumExpireTime < Date.now()) {
-                global.temp.expiredPremiumUsers = global.temp.expiredPremiumUsers || [];
-                if (!global.temp.expiredPremiumUsers.includes(senderID)) {
-                    global.temp.expiredPremiumUsers.push(senderID);
-                }
-                return adminBot.includes(senderID) ? 2 : (adminBox.includes(senderID) ? 1 : 0);
-            }
-        }
-        return 3;
-    }
-    if (adminBot.includes(senderID)) return 2;
-    if (adminBox.includes(senderID)) return 1;
-    return 0;
-}
-
-async function checkMoneyRequirement(userData, requiredMoney) {
-    if (!requiredMoney || requiredMoney <= 0) return true;
-    const userMoney = userData.money || 0;
-    return userMoney >= requiredMoney;
-}
-
-function isAdmin(senderID) {
-    if (!senderID) return false;
-    const config = global.GoatBot.config;
-    const adminBot = config.adminBot || [];
-    return adminBot.includes(senderID);
+    return adminBot.includes(senderID) ? 2 : adminBox.includes(senderID) ? 1 : 0;
 }
 
 function getText(type, reason, time, targetID, lang) {
@@ -53,43 +21,22 @@ function getText(type, reason, time, targetID, lang) {
 }
 
 function replaceShortcutInLang(text, prefix, commandName) {
-    return text.replace(/\{(?:p|prefix)\}/g, prefix).replace(/\{(?:n|name)\}/g, commandName).replace(/\{pn\}/g, `${prefix}${commandName}`);
-}
-
-function levenshteinDistance(str1, str2) {
-    const len1 = str1.length;
-    const len2 = str2.length;
-    const matrix = [];
-    for (let i = 0; i <= len1; i++) matrix[i] = [i];
-    for (let j = 0; j <= len2; j++) matrix[0][j] = j;
-    for (let i = 1; i <= len1; i++) {
-        for (let j = 1; j <= len2; j++) {
-            const cost = str1[i - 1] === str2[j - 1] ? 0 : 1;
-            matrix[i][j] = Math.min(matrix[i - 1][j] + 1, matrix[i][j - 1] + 1, matrix[i - 1][j - 1] + cost);
-        }
-    }
-    return matrix[len1][len2];
-}
-
-function findSimilarCommands(commandName, limit = 1) {
-    const allCommands = Array.from(global.GoatBot.commands.keys());
-    const allAliases = Array.from(global.GoatBot.aliases.keys());
-    const allCommandNames = [...allCommands, ...allAliases];
-    const similarities = allCommandNames.map(cmd => ({
-        name: cmd,
-        distance: levenshteinDistance(commandName.toLowerCase(), cmd.toLowerCase())
-    }));
-    similarities.sort((a, b) => a.distance - b.distance);
-    return similarities.slice(0, limit).filter(s => s.distance <= 3).map(s => s.name);
+    return text
+        .replace(/\{(?:p|prefix)\}/g, prefix)
+        .replace(/\{(?:n|name)\}/g, commandName)
+        .replace(/\{pn\}/g, `${prefix}${commandName}`);
 }
 
 function getRoleConfig(utils, command, isGroup, threadData, commandName) {
     let roleConfig;
-    if (utils.isNumber(command.config.role)) roleConfig = { onStart: command.config.role };
-    else if (typeof command.config.role == "object" && !Array.isArray(command.config.role)) {
+    if (utils.isNumber(command.config.role)) {
+        roleConfig = { onStart: command.config.role };
+    } else if (typeof command.config.role == "object" && !Array.isArray(command.config.role)) {
         if (!command.config.role.onStart) command.config.role.onStart = 0;
         roleConfig = command.config.role;
-    } else roleConfig = { onStart: 0 };
+    } else {
+        roleConfig = { onStart: 0 };
+    }
     if (isGroup) roleConfig.onStart = threadData.data.setRole?.[commandName] ?? roleConfig.onStart;
     for (const key of ["onChat", "onStart", "onReaction", "onReply"]) {
         if (roleConfig[key] == undefined) roleConfig[key] = roleConfig.onStart;
@@ -129,60 +76,16 @@ function createGetText2(langCode, pathCustomLang, prefix, command) {
     const commandType = command.config.countDown ? "command" : "command event";
     const commandName = command.config.name;
     let customLang = {};
-    let getText2 = () => {};
     if (fs.existsSync(pathCustomLang)) customLang = require(pathCustomLang)[commandName]?.text || {};
     if (command.langs || customLang || {}) {
-        getText2 = function (key, ...args) {
+        return function (key, ...args) {
             let lang = command.langs?.[langCode]?.[key] || customLang[key] || "";
             lang = replaceShortcutInLang(lang, prefix, commandName);
             for (let i = args.length - 1; i >= 0; i--) lang = lang.replace(new RegExp(`%${i + 1}`, "g"), args[i]);
             return lang || `❌ Can't find text on language "${langCode}" for ${commandType} "${commandName}" with key "${key}"`;
         };
     }
-    return getText2;
-}
-
-function normalizeNameForStylizedMatch(name) {
-    if (!name) return "";
-    return name
-        .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-}
-
-function stylizedNameMatch(searchName, targetName) {
-    if (!searchName || !targetName) return false;
-    
-    const searchLower = searchName.toLowerCase();
-    const targetLower = targetName.toLowerCase();
-    
-    if (searchLower === targetLower) return true;
-    
-    const searchNorm = normalizeNameForStylizedMatch(searchName);
-    const targetNorm = normalizeNameForStylizedMatch(targetName);
-    
-    if (searchNorm === targetNorm) return true;
-    
-    const searchParts = searchLower.split(/\s+/);
-    const targetParts = targetLower.split(/\s+/);
-    
-    let allPartsMatch = true;
-    for (const searchPart of searchParts) {
-        let found = false;
-        for (const targetPart of targetParts) {
-            if (targetPart.includes(searchPart) || searchPart.includes(targetPart)) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            allPartsMatch = false;
-            break;
-        }
-    }
-    
-    return allPartsMatch;
+    return () => {};
 }
 
 module.exports = function (api, threadModel, userModel, dashBoardModel, globalModel, usersData, threadsData, dashBoardData, globalData) {
@@ -192,30 +95,44 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
         const { config, configCommands: { envGlobal, envCommands, envEvents } } = GoatBot;
         const { autoRefreshThreadInfoFirstTime } = config.database;
         let { hideNotiMessage = {} } = config;
-        const { body, messageID, threadID, isGroup } = event;
+        const { body, threadID, isGroup } = event;
+
+        // --- MENTION FIX & INIT START ---
+        // Ensure mentions is an object (FCA utils.js already parses it, but we safeguard it)
+        event.mentions = event.mentions || {};
+        
+        // Check if threadID exists
         if (!threadID) return;
+
         const senderID = event.userID || event.senderID || event.author;
         let threadData = global.db.allThreadData.find(t => t.threadID == threadID);
         let userData = global.db.allUserData.find(u => u.userID == senderID);
+
+        // Auto Create User Data if not exists
         if (!userData && !isNaN(senderID)) userData = await usersData.create(senderID);
+
+        // Auto Create Thread Data if not exists
         if (!threadData && !isNaN(threadID)) {
             if (global.temp.createThreadDataError.includes(threadID)) return;
             threadData = await threadsData.create(threadID);
             global.db.receivedTheFirstMessage[threadID] = true;
         } else {
+            // Refresh info on first start if configured
             if (autoRefreshThreadInfoFirstTime === true && !global.db.receivedTheFirstMessage[threadID]) {
                 global.db.receivedTheFirstMessage[threadID] = true;
                 await threadsData.refreshInfo(threadID);
             }
         }
+
         if (typeof threadData.settings.hideNotiMessage == "object") hideNotiMessage = threadData.settings.hideNotiMessage;
         const prefix = getPrefix(threadID);
         const role = getRole(threadData, senderID);
+        // --- INIT END ---
+
         const parameters = {
             api, usersData, threadsData, message, event, userModel, threadModel, prefix, dashBoardModel, globalModel, dashBoardData, globalData, envCommands, envEvents, envGlobal, role,
             removeCommandNameFromBody: function removeCommandNameFromBody(body_, prefix_, commandName_) {
-                if ([body_, prefix_, commandName_].every(x => nullAndUndefined.includes(x))) throw new Error("Please provide body, prefix and commandName");
-                for (let i = 0; i < arguments.length; i++) if (typeof arguments[i] != "string") throw new Error(`The parameter "${i + 1}" must be a string`);
+                if ([body_, prefix_, commandName_].every(x => nullAndUndefined.includes(x))) throw new Error("Please provide body, prefix and commandName to use this function");
                 return body_.replace(new RegExp(`^${prefix_}(\\s+|)${commandName_}`, "i"), "").trim();
             }
         };
@@ -228,159 +145,12 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
         }
 
         let isUserCallCommand = false;
-
         async function onStart() {
-            if (!body) return;
+            if (!body || !body.startsWith(prefix)) return;
             const dateNow = Date.now();
-            const { usePrefix = { enable: true, adminUsePrefix: { enable: true, specificUids: [] } } } = config;
-            const isAdminBot = isAdmin(senderID);
-            const adminUsePrefixConfig = usePrefix.adminUsePrefix || { enable: true, specificUids: [] };
-            const isSpecificUid = adminUsePrefixConfig.specificUids?.includes(senderID) || false;
-            let args = [];
-            let commandName = "";
-            let command = null;
-            let usedPrefix = false;
-
-            const mentions = event.mentions || {};
-            const mentionIDs = Object.keys(mentions);
-
-            if (threadData && threadData.userInfo) {
-                for (const id of mentionIDs) {
-                    if (!id.startsWith("MENTION_") && !isNaN(id)) {
-                        const userInfo = threadData.userInfo.find(u => u.id == id);
-                        if (userInfo && userInfo.name) {
-                            mentions[id] = userInfo.name;
-                        }
-                    }
-                }
-                event.mentions = mentions;
-            }
-
-            const ghostID = mentionIDs.find(id => id.startsWith("MENTION_"));
-            if (ghostID) {
-                const rawTagText = mentions[ghostID] || "";
-                const searchName = rawTagText.replace(/^@/, "").trim();
-                
-                if (searchName) {
-                    try {
-                        const threadInfo = await api.getThreadInfo(threadID);
-                        const { nicknames = {}, userInfo = [] } = threadInfo;
-                        
-                        let foundID = null;
-                        
-                        for (const id of Object.keys(nicknames)) {
-                            const nickname = nicknames[id] || "";
-                            if (stylizedNameMatch(searchName, nickname)) {
-                                foundID = id;
-                                break;
-                            }
-                        }
-                        
-                        if (!foundID && userInfo.length > 0) {
-                            for (const user of userInfo) {
-                                const fullName = user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim();
-                                if (stylizedNameMatch(searchName, fullName)) {
-                                    foundID = user.id;
-                                    break;
-                                }
-                            }
-                        }
-                        
-                        if (foundID) {
-                            delete mentions[ghostID];
-                            let finalName = rawTagText.replace("@", "");
-                            
-                            const threadUser = userInfo.find(u => u.id == foundID);
-                            if (threadUser) {
-                                finalName = threadUser.name || `${threadUser.firstName || ''} ${threadUser.lastName || ''}`.trim() || finalName;
-                            }
-                            
-                            if (threadData && threadData.userInfo) {
-                                const dbUser = threadData.userInfo.find(u => u.id == foundID);
-                                if (dbUser && dbUser.name) {
-                                    finalName = dbUser.name;
-                                }
-                            }
-                            
-                            mentions[foundID] = finalName;
-                            event.mentions = mentions;
-                        } else {
-                            delete mentions[ghostID];
-                            event.mentions = {};
-                        }
-                    } catch (err) {
-                        event.mentions = {};
-                    }
-                }
-            } else if (mentionIDs.length > 0) {
-                event.mentions = mentions;
-            } else if (event.messageReply && event.messageReply.senderID) {
-                const replySenderID = event.messageReply.senderID;
-                if (threadData && threadData.userInfo) {
-                    const dbUser = threadData.userInfo.find(u => u.id == replySenderID);
-                    if (dbUser && dbUser.name) {
-                        event.mentions = { [replySenderID]: dbUser.name };
-                    } else {
-                        event.mentions = { [replySenderID]: "" };
-                    }
-                } else {
-                    event.mentions = { [replySenderID]: "" };
-                }
-            }
-
-            if (body.startsWith(prefix)) {
-                usedPrefix = true;
-                args = body.slice(prefix.length).trim().split(/ +/);
-                commandName = args.shift().toLowerCase();
-                usedPrefix = true;
-            } else {
-                let canUseWithoutPrefix = false;
-                if ((isAdminBot || isSpecificUid) && adminUsePrefixConfig.enable === false) {
-                    canUseWithoutPrefix = true;
-                }
-                if (!canUseWithoutPrefix) {
-                    return;
-                }
-                const trimmedBody = body.trim();
-                const firstWord = trimmedBody.split(/\s+/)[0].toLowerCase();
-                const allCommands = Array.from(GoatBot.commands.keys());
-                const allAliases = Array.from(GoatBot.aliases.keys());
-                const allCommandNames = [...allCommands, ...allAliases];
-                if (allCommandNames.includes(firstWord)) {
-                    args = trimmedBody.split(/ +/);
-                    commandName = args.shift().toLowerCase();
-                    usedPrefix = false;
-                } else {
-                    return;
-                }
-            }
-
-            command = GoatBot.commands.get(commandName) || GoatBot.commands.get(GoatBot.aliases.get(commandName));
-
-            if (!command) {
-                if (usedPrefix && !hideNotiMessage.commandNotFound) {
-                    if (!commandName) {
-                        return await message.reply(utils.getText({ lang: langCode, head: "handlerEvents" }, "onlyPrefix", prefix));
-                    } else {
-                        const similarCommands = findSimilarCommands(commandName);
-                        if (similarCommands.length > 0) {
-                            return await message.reply(utils.getText({ lang: langCode, head: "handlerEvents" }, "commandNotFoundWithSuggestion", commandName, prefix, similarCommands.join(", ")));
-                        } else {
-                            return await message.reply(utils.getText({ lang: langCode, head: "handlerEvents" }, "commandNotFound", commandName, prefix));
-                        }
-                    }
-                }
-                return;
-            }
-
-            let prefixRequired = true;
-            if (usePrefix.enable === false) prefixRequired = false;
-            if ((isAdminBot || isSpecificUid) && adminUsePrefixConfig.enable === false) prefixRequired = false;
-            if (command.config.usePrefix !== undefined) {
-                if (usePrefix.enable) prefixRequired = command.config.usePrefix;
-            }
-            if (prefixRequired && !usedPrefix) return;
-
+            const args = body.slice(prefix.length).trim().split(/ +/);
+            let commandName = args.shift().toLowerCase();
+            let command = GoatBot.commands.get(commandName) || GoatBot.commands.get(GoatBot.aliases.get(commandName));
             const aliasesData = threadData.data.aliases || {};
             for (const cmdName in aliasesData) {
                 if (aliasesData[cmdName].includes(commandName)) {
@@ -389,46 +159,27 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                 }
             }
             if (command) commandName = command.config.name;
-
+            
             function removeCommandNameFromBody(body_, prefix_, commandName_) {
-                if (arguments.length) {
-                    if (typeof body_ != "string") throw new Error(`The first argument must be a string`);
-                    if (typeof prefix_ != "string") throw new Error(`The second argument must be a string`);
-                    if (typeof commandName_ != "string") throw new Error(`The third argument must be a string`);
-                    if (usedPrefix) {
-                        return body_.replace(new RegExp(`^${prefix_}(\\s+|)${commandName_}`, "i"), "").trim();
-                    } else {
-                        return body_.replace(new RegExp(`^(\\s+|)${commandName_}`, "i"), "").trim();
-                    }
-                } else {
-                    if (usedPrefix) return body.replace(new RegExp(`^${prefix}(\\s+|)${commandName}`, "i"), "").trim();
-                    else return body.replace(new RegExp(`^(\\s+|)${commandName}`, "i"), "").trim();
-                }
+                if (arguments.length) return body_.replace(new RegExp(`^${prefix_}(\\s+|)${commandName_}`, "i"), "").trim();
+                return body.replace(new RegExp(`^${prefix}(\\s+|)${commandName}`, "i"), "").trim();
             }
 
             if (isBannedOrOnlyAdmin(userData, threadData, senderID, threadID, isGroup, commandName, message, langCode)) return;
-
-            const requiredMoney = command.config.requiredMoney;
-            if (requiredMoney && requiredMoney > 0) {
-                const hasEnoughMoney = await checkMoneyRequirement(userData, requiredMoney);
-                if (!hasEnoughMoney) {
-                    const userMoney = userData.money || 0;
-                    return await message.reply(`⚠ | You need at least $${requiredMoney} to use this command.\nYour balance: $${userMoney}\nYou need $${requiredMoney - userMoney} more.`);
-                }
+            if (!command) {
+                if (!hideNotiMessage.commandNotFound) return await message.reply(commandName ? utils.getText({ lang: langCode, head: "handlerEvents" }, "commandNotFound", commandName, prefix) : utils.getText({ lang: langCode, head: "handlerEvents" }, "commandNotFound2", prefix));
+                else return true;
             }
-
             const roleConfig = getRoleConfig(utils, command, isGroup, threadData, commandName);
             const needRole = roleConfig.onStart;
-
             if (needRole > role) {
                 if (!hideNotiMessage.needRoleToUseCmd) {
                     if (needRole == 1) return await message.reply(utils.getText({ lang: langCode, head: "handlerEvents" }, "onlyAdmin", commandName));
                     else if (needRole == 2) return await message.reply(utils.getText({ lang: langCode, head: "handlerEvents" }, "onlyAdminBot2", commandName));
-                    else if (needRole == 3) return await message.reply(`🔒 This command requires premium access!`);
-                    else if (needRole == 4) return await message.reply(`✖️ This command is only for developers!`);
-                } else return true;
+                } else {
+                    return true;
+                }
             }
-
             if (!client.countDown[commandName]) client.countDown[commandName] = {};
             const timestamps = client.countDown[commandName];
             let getCoolDown = command.config.countDown;
@@ -438,7 +189,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                 const expirationTime = timestamps[senderID] + cooldownCommand;
                 if (dateNow < expirationTime) return await message.reply(utils.getText({ lang: langCode, head: "handlerEvents" }, "waitingForCommand", ((expirationTime - dateNow) / 1000).toString().slice(0, 3)));
             }
-
             const time = getTime("DD/MM/YYYY HH:mm:ss");
             isUserCallCommand = true;
             try {
@@ -486,9 +236,7 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                             await message.reply(utils.getText({ lang: langCode, head: "handlerEvents" }, "errorOccurred2", time, commandName, removeHomeDir(err.stack ? err.stack.split("\n").slice(0, 5).join("\n") : JSON.stringify(err, null, 2))));
                         }
                     }
-                }).catch(err => {
-                    log.err("onChat", `An error occurred when calling the command onChat ${commandName}`, err);
-                });
+                }).catch(err => { log.err("onChat", `An error occurred when calling the command onChat ${commandName}`, err); });
             }
         }
 
@@ -498,7 +246,7 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             if (typeof event.body == "string" && event.body.startsWith(prefix)) args = event.body.split(/ +/);
             for (const key of allOnAnyEvent) {
                 if (typeof key !== "string") continue;
-                const command = GoatBot.commands.get(key.toLowerCase());
+                const command = GoatBot.commands.get(key);
                 if (!command) continue;
                 const commandName = command.config.name;
                 const time = getTime("DD/MM/YYYY HH:mm:ss");
@@ -518,9 +266,7 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                             log.err("onAnyEvent", `An error occurred when calling the command onAnyEvent ${commandName}`, err);
                         }
                     }
-                }).catch(err => {
-                    log.err("onAnyEvent", `An error occurred when calling the command onAnyEvent ${commandName}`, err);
-                });
+                }).catch(err => { log.err("onAnyEvent", `An error occurred when calling the command onAnyEvent ${commandName}`, err); });
             }
         }
 
@@ -550,9 +296,7 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                             await message.reply(utils.getText({ lang: langCode, head: "handlerEvents" }, "errorOccurred2", time, commandName, removeHomeDir(err.stack ? err.stack.split("\n").slice(0, 5).join("\n") : JSON.stringify(err, null, 2))));
                         }
                     }
-                }).catch(err => {
-                    log.err("onFirstChat", `An error occurred when calling the command onFirstChat ${commandName}`, err);
-                });
+                }).catch(err => { log.err("onFirstChat", `An error occurred when calling the command onFirstChat ${commandName}`, err); });
             }
         }
 
@@ -561,7 +305,7 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             const { onReply } = GoatBot;
             const Reply = onReply.get(event.messageReply.messageID);
             if (!Reply) return;
-            Reply.delete = () => onReply.delete(messageID);
+            Reply.delete = () => onReply.delete(event.messageID);
             const commandName = Reply.commandName;
             if (!commandName) {
                 message.reply(utils.getText({ lang: langCode, head: "handlerEvents" }, "cannotFindCommandName"));
@@ -578,14 +322,13 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                 if (!hideNotiMessage.needRoleToUseCmdOnReply) {
                     if (needRole == 1) return await message.reply(utils.getText({ lang: langCode, head: "handlerEvents" }, "onlyAdminToUseOnReply", commandName));
                     else if (needRole == 2) return await message.reply(utils.getText({ lang: langCode, head: "handlerEvents" }, "onlyAdminBot2ToUseOnReply", commandName));
-                    else if (needRole == 3) return await message.reply(`⚠ | This command requires premium access.`);
-                    else if (needRole == 4) return await message.reply(`⚠ | This command is for developers only.`);
-                } else return true;
+                } else {
+                    return true;
+                }
             }
             const getText2 = createGetText2(langCode, `${process.cwd()}/languages/cmds/${langCode}.js`, prefix, command);
             const time = getTime("DD/MM/YYYY HH:mm:ss");
             try {
-                if (!command) throw new Error(`Cannot find command with commandName: ${commandName}`);
                 const args = body ? body.split(/ +/) : [];
                 createMessageSyntaxError(commandName);
                 if (isBannedOrOnlyAdmin(userData, threadData, senderID, threadID, isGroup, commandName, message, langCode)) return;
@@ -599,9 +342,9 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
 
         async function onReaction() {
             const { onReaction } = GoatBot;
-            const Reaction = onReaction.get(messageID);
+            const Reaction = onReaction.get(event.messageID);
             if (!Reaction) return;
-            Reaction.delete = () => onReaction.delete(messageID);
+            Reaction.delete = () => onReaction.delete(event.messageID);
             const commandName = Reaction.commandName;
             if (!commandName) {
                 message.reply(utils.getText({ lang: langCode, head: "handlerEvents" }, "cannotFindCommandName"));
@@ -618,13 +361,12 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                 if (!hideNotiMessage.needRoleToUseCmdOnReaction) {
                     if (needRole == 1) return await message.reply(utils.getText({ lang: langCode, head: "handlerEvents" }, "onlyAdminToUseOnReaction", commandName));
                     else if (needRole == 2) return await message.reply(utils.getText({ lang: langCode, head: "handlerEvents" }, "onlyAdminBot2ToUseOnReaction", commandName));
-                    else if (needRole == 3) return await message.reply(`⚠ | This command requires premium access.`);
-                    else if (needRole == 4) return await message.reply(`⚠ | This command is for developers only.`);
-                } else return true;
+                } else {
+                    return true;
+                }
             }
             const time = getTime("DD/MM/YYYY HH:mm:ss");
             try {
-                if (!command) throw new Error(`Cannot find command with commandName: ${commandName}`);
                 const getText2 = createGetText2(langCode, `${process.cwd()}/languages/cmds/${langCode}.js`, prefix, command);
                 const args = [];
                 createMessageSyntaxError(commandName);
@@ -685,9 +427,7 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                             log.err("onEvent", `An error occurred when calling the command onEvent ${commandName}`, err);
                         }
                     }
-                }).catch(err => {
-                    log.err("onEvent", `An error occurred when calling the command onEvent ${commandName}`, err);
-                });
+                }).catch(err => { log.err("onEvent", `An error occurred when calling the command onEvent ${commandName}`, err); });
             }
         }
 
@@ -695,6 +435,18 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
         async function read_receipt() { }
         async function typ() { }
 
-        return { onAnyEvent, onFirstChat, onChat, onStart, onReaction, onReply, onEvent, handlerEvent, presence, read_receipt, typ };
+        return {
+            onAnyEvent,
+            onFirstChat,
+            onChat,
+            onStart,
+            onReaction,
+            onReply,
+            onEvent,
+            handlerEvent,
+            presence,
+            read_receipt,
+            typ
+        };
     };
 };
