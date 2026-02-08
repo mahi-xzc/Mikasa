@@ -16,22 +16,6 @@ var topics = [
     "/messaging_events", "/orca_message_notifications", "/pp", "/webrtc_response",
 ];
 
-function normalizeName(name) {
-    if (!name) return '';
-    return name
-        .toLowerCase()
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .replace(/[^\w\s]/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-}
-
-function resolveMentionId(mentionId, userMap) {
-    if (!mentionId.startsWith("MENTION_")) return mentionId;
-    return mentionId;
-}
-
 function listenMqtt(defaultFuncs, api, ctx, globalCallback) {
     var chatOn = ctx.globalOptions.online;
     var foreground = false;
@@ -202,8 +186,7 @@ function parseDelta(defaultFuncs, api, ctx, globalCallback, v) {
                         dataMentions.forEach(function(mention) {
                             if (mention.offset !== undefined && mention.length !== undefined && mention.userId) {
                                 var mentionText = replyBody.substring(mention.offset, mention.offset + mention.length);
-                                const mentionId = resolveMentionId(mention.userId, {});
-                                mentions[mentionId] = mentionText;
+                                mentions[mention.userId] = mentionText;
                             }
                         });
                     } else if (dataMentions && typeof dataMentions === 'object') {
@@ -211,8 +194,7 @@ function parseDelta(defaultFuncs, api, ctx, globalCallback, v) {
                             var mentionInfo = dataMentions[userId];
                             if (mentionInfo && mentionInfo.o !== undefined && mentionInfo.l !== undefined) {
                                 var mentionText = replyBody.substring(mentionInfo.o, mentionInfo.o + mentionInfo.l);
-                                const mentionId = resolveMentionId(userId, {});
-                                mentions[mentionId] = mentionText;
+                                mentions[userId] = mentionText;
                             }
                         });
                     }
@@ -224,8 +206,7 @@ function parseDelta(defaultFuncs, api, ctx, globalCallback, v) {
                                 metadataMentions.forEach(function(mention) {
                                     if (mention.offset !== undefined && mention.length !== undefined && mention.userId) {
                                         var mentionText = replyBody.substring(mention.offset, mention.offset + mention.length);
-                                        const mentionId = resolveMentionId(mention.userId, {});
-                                        mentions[mentionId] = mentionText;
+                                        mentions[mention.userId] = mentionText;
                                     }
                                 });
                             }
@@ -233,6 +214,10 @@ function parseDelta(defaultFuncs, api, ctx, globalCallback, v) {
                             log.error("parseDelta", "Error parsing metadata mentions:", e);
                         }
                     }
+
+                    console.log("MESSAGE REPLY DEBUG");
+                    console.log("Body:", replyBody);
+                    console.log("Mentions object:", mentions);
 
                     var callbackToReturn = {
                         type: "message_reply",
@@ -276,8 +261,7 @@ function parseDelta(defaultFuncs, api, ctx, globalCallback, v) {
                                         rMentionData.forEach(function(mention) {
                                             if (mention.offset !== undefined && mention.length !== undefined && mention.id) {
                                                 var mentionText = repliedBody.substring(mention.offset, mention.offset + mention.length);
-                                                const mentionId = resolveMentionId(mention.id, {});
-                                                rmentions[mentionId] = mentionText;
+                                                rmentions[mention.id] = mentionText;
                                             }
                                         });
                                     }
@@ -295,8 +279,7 @@ function parseDelta(defaultFuncs, api, ctx, globalCallback, v) {
                                         rPrngData.forEach(function(item) {
                                             if (item.i && item.o !== undefined && item.l !== undefined) {
                                                 var mentionText = repliedBody.substring(item.o, item.o + item.l);
-                                                const mentionId = resolveMentionId(item.i, {});
-                                                rmentions[mentionId] = mentionText;
+                                                rmentions[item.i] = mentionText;
                                             }
                                         });
                                     }
@@ -310,8 +293,7 @@ function parseDelta(defaultFuncs, api, ctx, globalCallback, v) {
                                     rMsgData.mn.forEach(function(item) {
                                         if (item.i && item.o !== undefined && item.l !== undefined) {
                                             var mentionText = repliedBody.substring(item.o, item.o + item.l);
-                                            const mentionId = resolveMentionId(item.i, {});
-                                            rmentions[mentionId] = mentionText;
+                                            rmentions[item.i] = mentionText;
                                         }
                                     });
                                 } catch (e) {

@@ -181,14 +181,8 @@ module.exports = function (defaultFuncs, api, ctx) {
         if (typeof tag !== "string") return cb({ error: "Mention tags must be strings." });
         const offset = msg.body.indexOf(tag, mention.fromIndex || 0);
         if (offset < 0) log.warn("handleMention", 'Mention for "' + tag + '" not found in message string.');
-        
-        let mentionId = mention.id;
-        if (typeof mentionId === 'string' && mentionId.startsWith("MENTION_")) {
-          log.warn("handleMention", `MENTION_ format detected: ${mentionId}. Using 0 as fallback.`);
-          mentionId = 0;
-        }
-        
-        const id = mentionId || 0;
+        if (mention.id == null) log.warn("handleMention", "Mention id should be non-null.");
+        const id = mention.id || 0;
         form["profile_xmd[" + i + "][offset]"] = offset;
         form["profile_xmd[" + i + "][length]"] = tag.length;
         form["profile_xmd[" + i + "][id]"] = id;
