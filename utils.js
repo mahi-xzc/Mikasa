@@ -769,6 +769,67 @@ async function getThreadParticipantsData(api, threadID) {
     });
 }
 
+let lastMarkTime = 0;
+const MIN_TIME_BETWEEN_MARKS = 2000;
+let isBlocked = false;
+let blockUntil = 0;
+
+function canMarkDelivery() {
+    const now = Date.now();
+    
+    if (isBlocked && now < blockUntil) {
+        return false;
+    }
+    
+    if (now - lastMarkTime < MIN_TIME_BETWEEN_MARKS) {
+        return false;
+    }
+    
+    return true;
+}
+
+function markDelivery(ctx, api, threadID, messageID) {
+    if (!threadID || !messageID || !ctx || !api) return;
+    
+    const now = Date.now();
+    
+    if (!canMarkDelivery()) {
+        return;
+    }
+    
+    lastMarkTime = now;
+    
+    api.markAsDelivered(threadID, messageID, (err) => {
+        if (err) {
+            if (err.error === 3252001) {
+                isBlocked = true;
+                blockUntil = now + 30000;
+                log.warn("MARK DELIVERY", `Facebook temporary block detected. Pausing markAsDelivered for 30 seconds.`);
+            } else {
+                log.error("MARK DELIVERY", err);
+            }
+        } else {
+            if (ctx.globalOptions.autoMarkRead) {
+                setTimeout(() => {
+                    api.markAsRead(threadID, (err) => { 
+                        if (err && err.error !== 3252001) {
+                            log.error("MARK READ", err); 
+                        }
+                    });
+                }, 1000);
+            }
+        }
+    });
+}
+
+function resetDeliveryBlock() {
+    isBlocked = false;
+    blockUntil = 0;
+    lastMarkTime = 0;
+}
+
+setInterval(resetDeliveryBlock, 5 * 60 * 1000);
+
 module.exports = {
     getType,
     isReadableStream,
@@ -812,5 +873,8 @@ module.exports = {
     formatAttachment,
     resolveMentionId,
     resolveAllMentions,
-    getThreadParticipantsData
+    getThreadParticipantsData,
+    markDelivery,
+    canMarkDelivery,
+    resetDeliveryBlock
 };
