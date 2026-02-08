@@ -73,7 +73,6 @@ module.exports = function (defaultFuncs, api, ctx) {
   function handleMention(msg, form, cb) {
     if (msg.mentions) {
       form.payload.tasks[0].payload.send_type = 1;
-
       let mentions = [];
       if (Array.isArray(msg.mentions)) {
         mentions = msg.mentions;
@@ -82,19 +81,16 @@ module.exports = function (defaultFuncs, api, ctx) {
           mentions.push({ id: id, tag: msg.mentions[id] });
         }
       }
-
       const mentionData = {
         mention_ids: [],
         mention_offsets: [],
         mention_lengths: [],
         mention_types: []
       };
-
       for (let i = 0; i < mentions.length; i++) {
         const mention = mentions[i];
         const tag = mention.tag;
         if (typeof tag !== "string") return cb({ error: "Mention tags must be strings." });
-
         let offset = msg.body.indexOf(tag, mention.fromIndex || 0);
         if (offset < 0) {
           log.warn("handleMention", 'Mention for "' + tag + '" not found in message string.');
@@ -104,13 +100,16 @@ module.exports = function (defaultFuncs, api, ctx) {
           log.warn("handleMention", "Mention id should be non-null.");
           continue;
         }
-
-        mentionData.mention_ids.push(mention.id);
+        let mentionId = mention.id;
+        if (typeof mentionId === 'string' && mentionId.startsWith("MENTION_")) {
+          log.warn("handleMention", `MENTION_ format: ${mentionId}. Using 0.`);
+          mentionId = 0;
+        }
+        mentionData.mention_ids.push(mentionId);
         mentionData.mention_offsets.push(offset);
         mentionData.mention_lengths.push(tag.length);
         mentionData.mention_types.push("p");
       }
-
       if (mentionData.mention_ids.length > 0) {
         form.payload.tasks[0].payload.mention_data = {
           mention_ids: mentionData.mention_ids.join(","),
@@ -144,14 +143,11 @@ module.exports = function (defaultFuncs, api, ctx) {
         reply_type: 0,
       };
     }
-
     if (!form.payload.tasks[0].payload.text && form.payload.tasks[0].payload.send_type === 1) {
         form.payload.tasks[0].payload.text = "";
     }
-
     form.payload.tasks.forEach((task) => { task.payload = JSON.stringify(task.payload); });
     form.payload = JSON.stringify(form.payload);
-
     if (ctx.mqttClient) {
         ctx.mqttClient.publish("/ls_req", JSON.stringify(form), function (err, data) {
             callback(err, { messageID: Date.now().toString(), threadID: threadID }); 
@@ -165,13 +161,10 @@ module.exports = function (defaultFuncs, api, ctx) {
     if (!callback && (utils.getType(threadID) === "Function" || utils.getType(threadID) === "AsyncFunction")) return threadID({ error: "Pass a threadID as a second argument." });
     if (!replyToMessage && utils.getType(callback) === "String") { replyToMessage = callback; callback = function () {}; }
     if (!callback) callback = function (err, friendList) {};
-
     if (typeof msg === "string") msg = { body: msg };
     if (typeof msg !== "object") return callback({ error: "Message should be of type string or object." });
-
     const timestamp = Date.now();
     const otid = (BigInt(timestamp) << 22n) + BigInt(Math.floor(Math.random() * 4194304));
-
     const form = {
       app_id: "772021112871879",
       payload: {
@@ -198,7 +191,6 @@ module.exports = function (defaultFuncs, api, ctx) {
       request_id: 1,
       type: 3,
     };
-
     handleEmoji(msg, form, () => {
       handleLocation(msg, form, () => {
         handleMention(msg, form, () => {
