@@ -16,6 +16,22 @@ var topics = [
     "/messaging_events", "/orca_message_notifications", "/pp", "/webrtc_response",
 ];
 
+function normalizeName(name) {
+    if (!name) return '';
+    return name
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^\w\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function resolveMentionId(mentionId, userMap) {
+    if (!mentionId.startsWith("MENTION_")) return mentionId;
+    return mentionId;
+}
+
 function listenMqtt(defaultFuncs, api, ctx, globalCallback) {
     var chatOn = ctx.globalOptions.online;
     var foreground = false;
@@ -122,60 +138,99 @@ function parseDelta(defaultFuncs, api, ctx, globalCallback, v) {
                 } else if (delta.deltaMessageReply) {
                     var mentions = {};
                     var replyBody = delta.deltaMessageReply.message?.body || "";
-                    
-                    if (delta.deltaMessageReply.message?.data?.prng) {
-                        try {
-                            var prngData = typeof delta.deltaMessageReply.message.data.prng === "string" 
-                                ? JSON.parse(delta.deltaMessageReply.message.data.prng) 
-                                : delta.deltaMessageReply.message.data.prng;
-                            
-                            if (Array.isArray(prngData)) {
-                                prngData.forEach(function(item) {
+                    var dataMentions = {};
+
+                    if (delta.deltaMessageReply.message?.data) {
+                        var msgData = delta.deltaMessageReply.message.data;
+
+                        if (msgData.mentionData) {
+                            try {
+                                dataMentions = typeof msgData.mentionData === "string" 
+                                    ? JSON.parse(msgData.mentionData) 
+                                    : msgData.mentionData;
+                            } catch (e) {
+                                log.error("parseDelta", "Error parsing mentionData:", e);
+                            }
+                        }
+
+                        if (msgData.prng) {
+                            try {
+                                var prngData = typeof msgData.prng === "string" 
+                                    ? JSON.parse(msgData.prng) 
+                                    : msgData.prng;
+                                if (Array.isArray(prngData)) {
+                                    prngData.forEach(function(item) {
+                                        if (item.i && item.o !== undefined && item.l !== undefined) {
+                                            var mentionText = replyBody.substring(item.o, item.o + item.l);
+                                            mentions[item.i] = mentionText;
+                                        }
+                                    });
+                                }
+                            } catch (e) {
+                                log.error("parseDelta", "Error parsing prng:", e);
+                            }
+                        }
+
+                        if (msgData.mn && Array.isArray(msgData.mn)) {
+                            try {
+                                msgData.mn.forEach(function(item) {
                                     if (item.i && item.o !== undefined && item.l !== undefined) {
                                         var mentionText = replyBody.substring(item.o, item.o + item.l);
-                                        
-                                        var mentionedUserId = item.i;
-                                        if (mentionedUserId && typeof mentionedUserId === 'string' && mentionedUserId.startsWith("MENTION_")) {
-                                            if (delta.deltaMessageReply.message.data.mention_id_map && delta.deltaMessageReply.message.data.mention_id_map[mentionedUserId]) {
-                                                mentionedUserId = delta.deltaMessageReply.message.data.mention_id_map[mentionedUserId].toString();
-                                            } else if (delta.deltaMessageReply.message.participants && delta.deltaMessageReply.message.participants.length > 0) {
-                                                const participant = delta.deltaMessageReply.message.participants.find(p => {
-                                                    const participantId = p.toString();
-                                                    return participantId && !participantId.startsWith("MENTION_");
-                                                });
-                                                if (participant) {
-                                                    mentionedUserId = participant.toString();
-                                                }
-                                            }
-                                        }
-                                        
-                                        mentions[mentionedUserId] = mentionText;
+                                        mentions[item.i] = mentionText;
+                                    }
+                                });
+                            } catch (e) {
+                                log.error("parseDelta", "Error parsing mn:", e);
+                            }
+                        }
+
+                        if (msgData.mentions && Array.isArray(msgData.mentions)) {
+                            try {
+                                msgData.mentions.forEach(function(mention) {
+                                    if (mention.id && mention.offset !== undefined && mention.length !== undefined) {
+                                        var mentionText = replyBody.substring(mention.offset, mention.offset + mention.length);
+                                        mentions[mention.id] = mentionText;
+                                    }
+                                });
+                            } catch (e) {
+                                log.error("parseDelta", "Error parsing mentions:", e);
+                            }
+                        }
+                    }
+
+                    if (Array.isArray(dataMentions)) {
+                        dataMentions.forEach(function(mention) {
+                            if (mention.offset !== undefined && mention.length !== undefined && mention.userId) {
+                                var mentionText = replyBody.substring(mention.offset, mention.offset + mention.length);
+                                const mentionId = resolveMentionId(mention.userId, {});
+                                mentions[mentionId] = mentionText;
+                            }
+                        });
+                    } else if (dataMentions && typeof dataMentions === 'object') {
+                        Object.keys(dataMentions).forEach(function(userId) {
+                            var mentionInfo = dataMentions[userId];
+                            if (mentionInfo && mentionInfo.o !== undefined && mentionInfo.l !== undefined) {
+                                var mentionText = replyBody.substring(mentionInfo.o, mentionInfo.o + mentionInfo.l);
+                                const mentionId = resolveMentionId(userId, {});
+                                mentions[mentionId] = mentionText;
+                            }
+                        });
+                    }
+
+                    if (delta.deltaMessageReply.message?.messageMetadata?.mentions) {
+                        try {
+                            var metadataMentions = delta.deltaMessageReply.message.messageMetadata.mentions;
+                            if (Array.isArray(metadataMentions)) {
+                                metadataMentions.forEach(function(mention) {
+                                    if (mention.offset !== undefined && mention.length !== undefined && mention.userId) {
+                                        var mentionText = replyBody.substring(mention.offset, mention.offset + mention.length);
+                                        const mentionId = resolveMentionId(mention.userId, {});
+                                        mentions[mentionId] = mentionText;
                                     }
                                 });
                             }
                         } catch (e) {
-                            log.error("parseDelta", "Error parsing prng in reply:", e);
-                        }
-                    }
-                    
-                    if (delta.deltaMessageReply.message?.data?.mn && Array.isArray(delta.deltaMessageReply.message.data.mn)) {
-                        try {
-                            delta.deltaMessageReply.message.data.mn.forEach(function(item) {
-                                if (item.i && item.o !== undefined && item.l !== undefined) {
-                                    var mentionText = replyBody.substring(item.o, item.o + item.l);
-                                    
-                                    var mentionedUserId = item.i;
-                                    if (mentionedUserId && typeof mentionedUserId === 'string' && mentionedUserId.startsWith("MENTION_")) {
-                                        if (delta.deltaMessageReply.message.data.mention_id_map && delta.deltaMessageReply.message.data.mention_id_map[mentionedUserId]) {
-                                            mentionedUserId = delta.deltaMessageReply.message.data.mention_id_map[mentionedUserId].toString();
-                                        }
-                                    }
-                                    
-                                    mentions[mentionedUserId] = mentionText;
-                                }
-                            });
-                        } catch (e) {
-                            log.error("parseDelta", "Error parsing mn in reply:", e);
+                            log.error("parseDelta", "Error parsing metadata mentions:", e);
                         }
                     }
 
@@ -205,93 +260,91 @@ function parseDelta(defaultFuncs, api, ctx, globalCallback, v) {
                         participantIDs: (delta.deltaMessageReply.message.participants || []).map(e => e.toString())
                     };
 
-                    if (ctx.globalOptions.autoMarkDelivery) markDelivery(ctx, api, callbackToReturn.threadID, callbackToReturn.messageID);
-                    return !ctx.globalOptions.selfListen && callbackToReturn.senderID === ctx.userID ? undefined : globalCallback(null, callbackToReturn);
-                } else if (delta.deltaNewMessage) {
-                    var mentions = {};
-                    var messageBody = delta.deltaNewMessage.message?.body || "";
-                    
-                    if (delta.deltaNewMessage.message?.data?.prng) {
-                        try {
-                            var prngData = typeof delta.deltaNewMessage.message.data.prng === "string" 
-                                ? JSON.parse(delta.deltaNewMessage.message.data.prng) 
-                                : delta.deltaNewMessage.message.data.prng;
-                            
-                            if (Array.isArray(prngData)) {
-                                prngData.forEach(function(item) {
-                                    if (item.i && item.o !== undefined && item.l !== undefined) {
-                                        var mentionText = messageBody.substring(item.o, item.o + item.l);
-                                        
-                                        var mentionedUserId = item.i;
-                                        if (mentionedUserId && typeof mentionedUserId === 'string' && mentionedUserId.startsWith("MENTION_")) {
-                                            if (delta.deltaNewMessage.message.data.mention_id_map && delta.deltaNewMessage.message.data.mention_id_map[mentionedUserId]) {
-                                                mentionedUserId = delta.deltaNewMessage.message.data.mention_id_map[mentionedUserId].toString();
-                                            } else if (delta.deltaNewMessage.message.participants && delta.deltaNewMessage.message.participants.length > 0) {
-                                                const participant = delta.deltaNewMessage.message.participants.find(p => {
-                                                    const participantId = p.toString();
-                                                    return participantId && !participantId.startsWith("MENTION_");
-                                                });
-                                                if (participant) {
-                                                    mentionedUserId = participant.toString();
-                                                }
-                                            }
-                                        }
-                                        
-                                        mentions[mentionedUserId] = mentionText;
-                                    }
-                                });
-                            }
-                        } catch (e) {
-                            log.error("parseDelta", "Error parsing prng in new message:", e);
-                        }
-                    }
-                    
-                    if (delta.deltaNewMessage.message?.data?.mn && Array.isArray(delta.deltaNewMessage.message.data.mn)) {
-                        try {
-                            delta.deltaNewMessage.message.data.mn.forEach(function(item) {
-                                if (item.i && item.o !== undefined && item.l !== undefined) {
-                                    var mentionText = messageBody.substring(item.o, item.o + item.l);
-                                    
-                                    var mentionedUserId = item.i;
-                                    if (mentionedUserId && typeof mentionedUserId === 'string' && mentionedUserId.startsWith("MENTION_")) {
-                                        if (delta.deltaNewMessage.message.data.mention_id_map && delta.deltaNewMessage.message.data.mention_id_map[mentionedUserId]) {
-                                            mentionedUserId = delta.deltaNewMessage.message.data.mention_id_map[mentionedUserId].toString();
-                                        }
-                                    }
-                                    
-                                    mentions[mentionedUserId] = mentionText;
-                                }
-                            });
-                        } catch (e) {
-                            log.error("parseDelta", "Error parsing mn in new message:", e);
-                        }
-                    }
+                    if (delta.deltaMessageReply.repliedToMessage) {
+                        var rmentions = {};
+                        var repliedBody = delta.deltaMessageReply.repliedToMessage?.body || "";
 
-                    var callbackToReturn = {
-                        type: "message",
-                        threadID: (delta.deltaNewMessage.message.messageMetadata.threadKey.threadFbId || delta.deltaNewMessage.message.messageMetadata.threadKey.otherUserFbId).toString(),
-                        messageID: delta.deltaNewMessage.message.messageMetadata.messageId,
-                        senderID: delta.deltaNewMessage.message.messageMetadata.actorFbId.toString(),
-                        attachments: delta.deltaNewMessage.message.attachments ? delta.deltaNewMessage.message.attachments.map(function (att) {
-                            try {
-                                var mercury = att.mercuryJSON ? JSON.parse(att.mercuryJSON) : att;
-                                Object.assign(att, mercury);
-                                return att;
-                            } catch (e) {
-                                return att;
+                        if (delta.deltaMessageReply.repliedToMessage?.data) {
+                            var rMsgData = delta.deltaMessageReply.repliedToMessage.data;
+
+                            if (rMsgData.mentionData) {
+                                try {
+                                    var rMentionData = typeof rMsgData.mentionData === "string" 
+                                        ? JSON.parse(rMsgData.mentionData) 
+                                        : rMsgData.mentionData;
+                                    if (Array.isArray(rMentionData)) {
+                                        rMentionData.forEach(function(mention) {
+                                            if (mention.offset !== undefined && mention.length !== undefined && mention.id) {
+                                                var mentionText = repliedBody.substring(mention.offset, mention.offset + mention.length);
+                                                const mentionId = resolveMentionId(mention.id, {});
+                                                rmentions[mentionId] = mentionText;
+                                            }
+                                        });
+                                    }
+                                } catch (e) {
+                                    log.error("parseDelta", "Error parsing replied mentionData:", e);
+                                }
                             }
-                        }).map(att => {
-                            var x;
-                            try { x = utils._formatAttachment(att); } catch (ex) { x = att; x.error = ex; x.type = "unknown"; }
-                            return x;
-                        }) : [],
-                        args: messageBody.trim().split(/\s+/),
-                        body: messageBody,
-                        isGroup: !!delta.deltaNewMessage.message.messageMetadata.threadKey.threadFbId,
-                        mentions: mentions,
-                        timestamp: delta.deltaNewMessage.message.messageMetadata.timestamp,
-                        participantIDs: (delta.deltaNewMessage.message.participants || []).map(e => e.toString())
-                    };
+
+                            if (rMsgData.prng) {
+                                try {
+                                    var rPrngData = typeof rMsgData.prng === "string" 
+                                        ? JSON.parse(rMsgData.prng) 
+                                        : rMsgData.prng;
+                                    if (Array.isArray(rPrngData)) {
+                                        rPrngData.forEach(function(item) {
+                                            if (item.i && item.o !== undefined && item.l !== undefined) {
+                                                var mentionText = repliedBody.substring(item.o, item.o + item.l);
+                                                const mentionId = resolveMentionId(item.i, {});
+                                                rmentions[mentionId] = mentionText;
+                                            }
+                                        });
+                                    }
+                                } catch (e) {
+                                    log.error("parseDelta", "Error parsing replied prng:", e);
+                                }
+                            }
+
+                            if (rMsgData.mn && Array.isArray(rMsgData.mn)) {
+                                try {
+                                    rMsgData.mn.forEach(function(item) {
+                                        if (item.i && item.o !== undefined && item.l !== undefined) {
+                                            var mentionText = repliedBody.substring(item.o, item.o + item.l);
+                                            const mentionId = resolveMentionId(item.i, {});
+                                            rmentions[mentionId] = mentionText;
+                                        }
+                                    });
+                                } catch (e) {
+                                    log.error("parseDelta", "Error parsing replied mn:", e);
+                                }
+                            }
+                        }
+
+                        callbackToReturn.messageReply = {
+                            threadID: (delta.deltaMessageReply.repliedToMessage.messageMetadata.threadKey.threadFbId || delta.deltaMessageReply.repliedToMessage.messageMetadata.threadKey.otherUserFbId).toString(),
+                            messageID: delta.deltaMessageReply.repliedToMessage.messageMetadata.messageId,
+                            senderID: delta.deltaMessageReply.repliedToMessage.messageMetadata.actorFbId.toString(),
+                            attachments: delta.deltaMessageReply.repliedToMessage.attachments ? delta.deltaMessageReply.repliedToMessage.attachments.map(function (att) {
+                                try {
+                                    var mercury = att.mercuryJSON ? JSON.parse(att.mercuryJSON) : att;
+                                    Object.assign(att, mercury);
+                                    return att;
+                                } catch (e) {
+                                    return att;
+                                }
+                            }).map(att => {
+                                var x;
+                                try { x = utils._formatAttachment(att); } catch (ex) { x = att; x.error = ex; x.type = "unknown"; }
+                                return x;
+                            }) : [],
+                            args: repliedBody.trim().split(/\s+/),
+                            body: repliedBody,
+                            isGroup: !!delta.deltaMessageReply.repliedToMessage.messageMetadata.threadKey.threadFbId,
+                            mentions: rmentions,
+                            timestamp: delta.deltaMessageReply.repliedToMessage.messageMetadata.timestamp,
+                            participantIDs: (delta.deltaMessageReply.repliedToMessage.participants || []).map(e => e.toString())
+                        };
+                    }
 
                     if (ctx.globalOptions.autoMarkDelivery) markDelivery(ctx, api, callbackToReturn.threadID, callbackToReturn.messageID);
                     return !ctx.globalOptions.selfListen && callbackToReturn.senderID === ctx.userID ? undefined : globalCallback(null, callbackToReturn);
