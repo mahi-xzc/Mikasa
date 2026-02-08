@@ -73,7 +73,7 @@ module.exports = function (defaultFuncs, api, ctx) {
   function handleMention(msg, form, cb) {
     if (msg.mentions) {
       form.payload.tasks[0].payload.send_type = 1;
-      
+
       let mentions = [];
       if (Array.isArray(msg.mentions)) {
         mentions = msg.mentions;
@@ -94,7 +94,7 @@ module.exports = function (defaultFuncs, api, ctx) {
         const mention = mentions[i];
         const tag = mention.tag;
         if (typeof tag !== "string") return cb({ error: "Mention tags must be strings." });
-        
+
         let offset = msg.body.indexOf(tag, mention.fromIndex || 0);
         if (offset < 0) {
           log.warn("handleMention", 'Mention for "' + tag + '" not found in message string.');
@@ -144,7 +144,7 @@ module.exports = function (defaultFuncs, api, ctx) {
         reply_type: 0,
       };
     }
-    
+
     if (!form.payload.tasks[0].payload.text && form.payload.tasks[0].payload.send_type === 1) {
         form.payload.tasks[0].payload.text = "";
     }
