@@ -234,211 +234,143 @@ function formatAttachment(attachments, attachmentIds, attachmentMap, shareMap) {
 	}) : [];
 }
 
-function normalizeName(name) {
-    if (!name) return '';
-    return name
-        .toLowerCase()
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .replace(/[^\w\s]/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-}
-
 function formatDeltaMessage(m) {
-    var md = m.delta.messageMetadata;
-    var mentions = {};
-    var body = m.delta.body || "";
-    var args = body == "" ? [] : body.trim().split(/\s+/);
-    
-    // Method 1: Check mentionData
-    if (m.delta.data && m.delta.data.mentionData) {
-        try {
-            var mentionData = typeof m.delta.data.mentionData === "string" 
-                ? JSON.parse(m.delta.data.mentionData) 
-                : m.delta.data.mentionData;
-            
-            if (Array.isArray(mentionData)) {
-                mentionData.forEach(function(mention, idx) {
-                    if (mention.offset !== undefined && mention.length !== undefined) {
-                        var mentionText = body.substring(mention.offset, mention.offset + mention.length);
-                        var mentionId = mention.userId || mention.id || `MENTION_${idx}`;
-                        mentions[mentionId] = mentionText;
-                    }
-                });
-            }
-        } catch (e) {}
-    }
-    
-    // Method 2: Check prng data
-    if (m.delta.data && m.delta.data.prng) {
-        try {
-            var prngData = typeof m.delta.data.prng === "string" 
-                ? JSON.parse(m.delta.data.prng) 
-                : m.delta.data.prng;
-            
-            if (Array.isArray(prngData)) {
-                prngData.forEach(function(item, idx) {
-                    if (item.i && item.o !== undefined && item.l !== undefined) {
-                        var mentionText = body.substring(item.o, item.o + item.l);
-                        var mentionId = item.i || `MENTION_${idx}`;
-                        mentions[mentionId] = mentionText;
-                    }
-                });
-            }
-        } catch (e) {}
-    }
-    
-    // Method 3: Check mn data
-    if (m.delta.data && m.delta.data.mn) {
-        var mnData = Array.isArray(m.delta.data.mn) ? m.delta.data.mn : [];
-        mnData.forEach(function(item, idx) {
-            if (item.i && item.o !== undefined && item.l !== undefined) {
-                var mentionText = body.substring(item.o, item.o + item.l);
-                var mentionId = item.i || `MENTION_${idx}`;
-                mentions[mentionId] = mentionText;
-            }
-        });
-    }
-    
-    // Method 4: Check metadata mentions
-    if (md && md.mentions) {
-        try {
-            if (Array.isArray(md.mentions)) {
-                md.mentions.forEach(function(mention, idx) {
-                    if (mention.offset !== undefined && mention.length !== undefined && mention.userId) {
-                        var mentionText = body.substring(mention.offset, mention.offset + mention.length);
-                        var mentionId = mention.userId || `MENTION_${idx}`;
-                        mentions[mentionId] = mentionText;
-                    }
-                });
-            }
-        } catch (e) {}
-    }
-    
-    // Method 5: Check rawMentions
-    if (m.delta.rawMentions) {
-        try {
-            var rawMentions = m.delta.rawMentions;
-            if (Array.isArray(rawMentions)) {
-                rawMentions.forEach(function(mention, idx) {
-                    if (mention.offset !== undefined && mention.length !== undefined && mention.userId) {
-                        var mentionText = body.substring(mention.offset, mention.offset + mention.length);
-                        var mentionId = mention.userId || `MENTION_${idx}`;
-                        mentions[mentionId] = mentionText;
-                    }
-                });
-            }
-        } catch (e) {}
-    }
-    
-    // Method 6: Check data.mentions
-    if (m.delta.data && m.delta.data.mentions) {
-        try {
-            var dataMentions = m.delta.data.mentions;
-            if (Array.isArray(dataMentions)) {
-                dataMentions.forEach(function(mention, idx) {
-                    if (mention.id && mention.offset !== undefined && mention.length !== undefined) {
-                        var mentionText = body.substring(mention.offset, mention.offset + mention.length);
-                        var mentionId = mention.id || `MENTION_${idx}`;
-                        mentions[mentionId] = mentionText;
-                    }
-                });
-            }
-        } catch (e) {}
-    }
-    
-    // Method 7: Check generic mentions in data
-    if (m.delta.data) {
-        for (var key in m.delta.data) {
-            if (key.toLowerCase().includes('mention')) {
-                try {
-                    var mentionValue = m.delta.data[key];
-                    if (typeof mentionValue === 'string' && mentionValue.includes('[')) {
-                        var parsed = JSON.parse(mentionValue);
-                        if (Array.isArray(parsed)) {
-                            parsed.forEach(function(item, idx) {
-                                if (item.o !== undefined && item.l !== undefined) {
-                                    var mentionText = body.substring(item.o, item.o + item.l);
-                                    var mentionId = item.i || item.id || item.userId || `MENTION_${idx}`;
-                                    mentions[mentionId] = mentionText;
-                                }
-                            });
-                        }
-                    }
-                } catch (e) {}
-            }
-        }
-    }
-    
-    // Method 8: Fallback - extract @ mentions from body
-    if (Object.keys(mentions).length === 0 && body.includes('@')) {
-        var mentionRegex = /@([\w\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF\u0E00-\u0E7F\s\.\-']+)/g;
-        var match;
-        var mentionIndex = 0;
-        
-        while ((match = mentionRegex.exec(body)) !== null) {
-            var mentionText = match[0];
-            var mentionName = match[1].trim();
-            
-            // Try to find user ID from participants
-            if (m.delta.participants && Array.isArray(m.delta.participants)) {
-                var found = false;
-                for (var i = 0; i < m.delta.participants.length; i++) {
-                    var participant = m.delta.participants[i];
-                    // Simulate checking - in real scenario, need user info
-                    if (participant && participant.toString().includes(mentionName.substring(0, 3))) {
-                        mentions[participant] = mentionText;
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) {
-                    mentions[`MENTION_${mentionIndex}`] = mentionText;
-                    mentionIndex++;
-                }
-            } else {
-                mentions[`MENTION_${mentionIndex}`] = mentionText;
-                mentionIndex++;
-            }
-        }
-    }
-    
-    // Method 9: Last resort - check all data properties
-    if (Object.keys(mentions).length === 0 && m.delta.data) {
-        var dataStr = JSON.stringify(m.delta.data);
-        if (dataStr.includes('offset') && dataStr.includes('length')) {
-            try {
-                var dataObj = m.delta.data;
-                for (var key in dataObj) {
-                    var val = dataObj[key];
-                    if (Array.isArray(val)) {
-                        val.forEach(function(item, idx) {
-                            if (item && typeof item === 'object' && item.o !== undefined && item.l !== undefined) {
-                                var mentionText = body.substring(item.o, item.o + item.l);
-                                var mentionId = item.i || item.id || item.userId || `MENTION_${idx}`;
-                                mentions[mentionId] = mentionText;
-                            }
-                        });
-                    }
-                }
-            } catch (e) {}
-        }
-    }
+	var md = m.delta.messageMetadata;
+	var mentions = {};
+	var body = m.delta.body || "";
+	var args = body == "" ? [] : body.trim().split(/\s+/);
 
-    return { 
-        type: "message", 
-        senderID: md.actorFbId.toString().replace(/(fb)?id[:.]/, ""), 
-        threadID: ((md.threadKey.threadFbId || md.threadKey.otherUserFbId).toString()).replace(/(fb)?id[:.]/, ""), 
-        args: args, 
-        body: body, 
-        messageID: md.messageId, 
-        attachments: (m.delta.attachments || []).map(v => _formatAttachment(v)), 
-        mentions: mentions, 
-        timestamp: md.timestamp, 
-        isGroup: !!md.threadKey.threadFbId, 
-        participantIDs: m.delta.participants || [] 
-    };
+	console.log("=== DEBUG FORMAT DELTA MESSAGE ===");
+	console.log("Body:", body);
+	console.log("Full delta structure:", JSON.stringify(m.delta, null, 2));
+	console.log("Body contains @:", body.includes('@'));
+	console.log("=== END DEBUG ===");
+
+	if (body.includes('@')) {
+		console.log("Processing mention in body...");
+
+		var mentionRegex = /@([\w\u3040-\u30FF\u4E00-\u9FFF\uAC00-\uD7AF\u0E00-\u0E7F\s\.\-]+)/g;
+		var match;
+		var mentionPositions = [];
+
+		while ((match = mentionRegex.exec(body)) !== null) {
+			mentionPositions.push({
+				fullText: match[0],
+				name: match[1],
+				start: match.index,
+				end: match.index + match[0].length
+			});
+		}
+
+		console.log("Extracted mentions from text:", mentionPositions);
+
+		if (mentionPositions.length > 0 && m.delta.participants) {
+			console.log("Participants available:", m.delta.participants.length);
+
+			mentionPositions.forEach(function(mention, idx) {
+				mentions["MENTION_" + idx] = mention.fullText;
+			});
+		}
+	}
+
+	if (m.delta.data && m.delta.data.mentionData) {
+		try {
+			var mentionData = typeof m.delta.data.mentionData === "string" 
+				? JSON.parse(m.delta.data.mentionData) 
+				: m.delta.data.mentionData;
+
+			if (Array.isArray(mentionData)) {
+				mentionData.forEach(function(mention) {
+					if (mention.offset !== undefined && mention.length !== undefined && mention.userId) {
+						var mentionText = body.substring(mention.offset, mention.offset + mention.length);
+						mentions[mention.userId] = mentionText;
+					}
+				});
+			}
+		} catch (e) {}
+	}
+
+	if (m.delta.data && m.delta.data.prng) {
+		try {
+			var mdata = typeof m.delta.data.prng === "string" 
+				? JSON.parse(m.delta.data.prng) 
+				: m.delta.data.prng;
+
+			if (Array.isArray(mdata)) {
+				mdata.forEach(function(u) {
+					if (u.i && u.o !== undefined && u.l !== undefined) {
+						var mentionText = body.substring(u.o, u.o + u.l);
+						mentions[u.i] = mentionText;
+					}
+				});
+			}
+		} catch (e) {}
+	}
+
+	if (m.delta.data && m.delta.data.mn) {
+		var mdata = Array.isArray(m.delta.data.mn) ? m.delta.data.mn : [];
+		mdata.forEach(function(u) {
+			if (u.i && u.o !== undefined && u.l !== undefined) {
+				var mentionText = body.substring(u.o, u.o + u.l);
+				mentions[u.i] = mentionText;
+			}
+		});
+	}
+
+	if (md && md.mentions) {
+		try {
+			if (Array.isArray(md.mentions)) {
+				md.mentions.forEach(function(mention) {
+					if (mention.offset !== undefined && mention.length !== undefined && mention.userId) {
+						var mentionText = body.substring(mention.offset, mention.offset + mention.length);
+						mentions[mention.userId] = mentionText;
+					}
+				});
+			}
+		} catch (e) {}
+	}
+
+	if (m.delta.rawMentions) {
+		try {
+			var rawMentions = m.delta.rawMentions;
+			if (Array.isArray(rawMentions)) {
+				rawMentions.forEach(function(mention) {
+					if (mention.offset !== undefined && mention.length !== undefined && mention.userId) {
+						var mentionText = body.substring(mention.offset, mention.offset + mention.length);
+						mentions[mention.userId] = mentionText;
+					}
+				});
+			}
+		} catch (e) {}
+	}
+
+	if (m.delta.data && m.delta.data.mentions) {
+		try {
+			var dataMentions = m.delta.data.mentions;
+			if (Array.isArray(dataMentions)) {
+				dataMentions.forEach(function(mention) {
+					if (mention.id && mention.offset !== undefined && mention.length !== undefined) {
+						var mentionText = body.substring(mention.offset, mention.offset + mention.length);
+						mentions[mention.id] = mentionText;
+					}
+				});
+			}
+		} catch (e) {}
+	}
+
+	return { 
+		type: "message", 
+		senderID: md.actorFbId.toString().replace(/(fb)?id[:.]/, ""), 
+		threadID: ((md.threadKey.threadFbId || md.threadKey.otherUserFbId).toString()).replace(/(fb)?id[:.]/, ""), 
+		args: args, 
+		body: body, 
+		messageID: md.messageId, 
+		attachments: (m.delta.attachments || []).map(v => _formatAttachment(v)), 
+		mentions: mentions, 
+		timestamp: md.timestamp, 
+		isGroup: !!md.threadKey.threadFbId, 
+		participantIDs: m.delta.participants || [] 
+	};
 }
 
 function formatID(id) {
@@ -866,6 +798,5 @@ module.exports = {
 	setProxy,
 	getFroms,
 	_formatAttachment, 
-	formatAttachment,
-	normalizeName   
+	formatAttachment   
 };
