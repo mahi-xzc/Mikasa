@@ -248,29 +248,6 @@ function formatDeltaMessage(m) {
         var mentionedUserId = m_id[i];
         var mentionText = m.delta.body.substring(m_offset[i], m_offset[i] + m_length[i]);
         
-        if (mentionedUserId && typeof mentionedUserId === 'string' && mentionedUserId.startsWith("MENTION_")) {
-            if (m.delta.mentions) {
-                const mentionData = m.delta.mentions.find(mention => 
-                    mention.offset === m_offset[i] || 
-                    mention.length === m_length[i]
-                );
-                if (mentionData && mentionData.user_id) {
-                    mentionedUserId = mentionData.user_id.toString();
-                }
-            }
-            
-            if (mentionedUserId.startsWith("MENTION_") && m.delta.participants && m.delta.participants.length > 0) {
-                const mentionedName = mentionText.replace(/@/g, '').toLowerCase();
-                const participant = m.delta.participants.find(p => {
-                    const participantId = p.toString();
-                    return participantId && !participantId.startsWith("MENTION_");
-                });
-                if (participant) {
-                    mentionedUserId = participant.toString();
-                }
-            }
-        }
-        
         mentions[mentionedUserId] = mentionText;
     }
     
@@ -302,9 +279,9 @@ function formatMessage(m) {
         mentions = originalMessage.mentions;
     } else if (originalMessage.data && originalMessage.data.prng) {
         try {
-            var mdata = typeof originalMessage.data.prng === "string" ? 
-                JSON.parse(originalMessage.data.prng) : 
-                originalMessage.data.prng;
+            var mdata = typeof originalMessage.data.prng === "string" 
+                ? JSON.parse(originalMessage.data.prng) 
+                : originalMessage.data.prng;
             
             if (Array.isArray(mdata)) {
                 for (var i = 0; i < mdata.length; i++) {
@@ -314,21 +291,6 @@ function formatMessage(m) {
                         var mentionText = originalMessage.body ? 
                             originalMessage.body.substring(mention.o, mention.o + mention.l) : 
                             "";
-                        
-                        if (mentionedUserId && typeof mentionedUserId === 'string' && mentionedUserId.startsWith("MENTION_")) {
-                            if (originalMessage.mention_id_map && originalMessage.mention_id_map[mentionedUserId]) {
-                                mentionedUserId = originalMessage.mention_id_map[mentionedUserId].toString();
-                            } else if (originalMessage.participants && originalMessage.participants.length > 0) {
-                                const mentionedName = mentionText.replace(/@/g, '').toLowerCase();
-                                const participant = originalMessage.participants.find(p => {
-                                    const participantId = p.toString();
-                                    return participantId && !participantId.startsWith("MENTION_");
-                                });
-                                if (participant) {
-                                    mentionedUserId = participant.toString();
-                                }
-                            }
-                        }
                         
                         mentions[mentionedUserId] = mentionText;
                     }
@@ -738,6 +700,75 @@ function getAppState(jar) {
     return jar.getCookies("https://www.facebook.com").concat(jar.getCookies("https://facebook.com")).concat(jar.getCookies("https://www.messenger.com"));
 }
 
+function resolveMentionId(mentionId, mentionText, threadParticipants) {
+    if (!mentionId || !mentionText) return mentionId;
+    
+    if (typeof mentionId === 'string' && mentionId.startsWith("MENTION_")) {
+        const cleanMention = mentionText.replace('@', '').trim();
+        
+        if (threadParticipants && threadParticipants.length > 0) {
+            for (const participant of threadParticipants) {
+                if (participant.name && participant.name.toLowerCase() === cleanMention.toLowerCase()) {
+                    return participant.id;
+                }
+            }
+            
+            for (const participant of threadParticipants) {
+                if (participant.name && participant.name.toLowerCase().includes(cleanMention.toLowerCase())) {
+                    return participant.id;
+                }
+            }
+            
+            const firstName = cleanMention.split(' ')[0];
+            for (const participant of threadParticipants) {
+                if (participant.firstName && participant.firstName.toLowerCase() === firstName.toLowerCase()) {
+                    return participant.id;
+                }
+            }
+        }
+    }
+    
+    return mentionId;
+}
+
+function resolveAllMentions(mentions, threadParticipants) {
+    if (!mentions) return {};
+    
+    const resolvedMentions = {};
+    
+    for (const mentionId in mentions) {
+        const mentionText = mentions[mentionId];
+        const resolvedId = resolveMentionId(mentionId, mentionText, threadParticipants);
+        resolvedMentions[resolvedId] = mentionText;
+    }
+    
+    return resolvedMentions;
+}
+
+async function getThreadParticipantsData(api, threadID) {
+    return new Promise((resolve) => {
+        api.getThreadInfo(threadID, (err, info) => {
+            if (err || !info) {
+                console.error("Error getting thread info:", err);
+                return resolve([]);
+            }
+            
+            const participants = [];
+            if (info.participantIDs && info.participantNames) {
+                for (let i = 0; i < info.participantIDs.length; i++) {
+                    participants.push({
+                        id: info.participantIDs[i],
+                        name: info.participantNames[i] || '',
+                        firstName: info.participantNames[i] ? info.participantNames[i].split(' ')[0] : ''
+                    });
+                }
+            }
+            
+            resolve(participants);
+        });
+    });
+}
+
 module.exports = {
     getType,
     isReadableStream,
@@ -778,5 +809,8 @@ module.exports = {
     setProxy,
     getFroms,
     _formatAttachment, 
-    formatAttachment   
+    formatAttachment,
+    resolveMentionId,
+    resolveAllMentions,
+    getThreadParticipantsData
 };
