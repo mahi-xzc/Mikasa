@@ -21,38 +21,7 @@ module.exports = function (defaultFuncs, api, ctx) {
       };
     }
 
-    if (!threadID || !messageID) {
-      return callback("Error: messageID or threadID is not defined");
-    }
-
-    const form = {};
-
-    form["message_ids[0]"] = messageID;
-    form["thread_ids[" + threadID + "][0]"] = messageID;
-
-    defaultFuncs
-      .post(
-        "https://www.facebook.com/ajax/mercury/delivery_receipts.php",
-        ctx.jar,
-        form,
-      )
-      .then(utils.saveCookies(ctx.jar))
-      .then(utils.parseAndCheckLogin(ctx, defaultFuncs))
-      .then(function (resData) {
-        if (resData.error) {
-          throw resData;
-        }
-
-        return callback();
-      })
-      .catch(function (err) {
-        log.error("markAsDelivered", err);
-        if (utils.getType(err) == "Object" && err.error === "Not logged in.") {
-          ctx.loggedIn = false;
-        }
-        return callback(err);
-      });
-
+    callback();
     return returnPromise;
   };
 };
