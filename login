@@ -15,7 +15,25 @@ const path = defaultRequire("path");
 const readline = defaultRequire("readline");
 const fs = defaultRequire("fs-extra");
 const toptp = defaultRequire("totp-generator");
-const login = defaultRequire("mikasa-fca"); 
+
+// FIXED: Priority to Local Folder
+let login;
+const localFcaPath = `${process.cwd()}/mikasa-fca`;
+
+if (fs.existsSync(localFcaPath)) {
+	login = defaultRequire(localFcaPath);
+	console.log(gradient("#2BFF88", "#2BD2FF")("[MODULE] Loaded local mikasa-fca successfully."));
+} else {
+	try {
+		login = defaultRequire("mikasa-fca");
+		console.log("[MODULE] Loaded mikasa-fca from node_modules.");
+	} catch (err) {
+		console.error("ERROR: mikasa-fca module not found!");
+		console.error("Make sure the 'mikasa-fca' folder exists in your project directory.");
+		process.exit(1);
+	}
+}
+
 const qr = new (defaultRequire("qrcode-reader"));
 const Canvas = defaultRequire("canvas");
 
@@ -219,20 +237,16 @@ let changeFbStateByCode = false;
 let latestChangeContentAccount = fs.statSync(dirAccount).mtimeMs;
 let dashBoardIsRunning = false;
 
-// SAFE STOP HELPER (This fixes your error)
-function stopSpin(s) {
-	if (s && typeof s._stop === 'function') s._stop();
-}
-
 async function getAppStateFromEmail(spin = { _start: () => { }, _stop: () => { } }, facebookAccount) {
 	const { email, password, userAgent, proxy } = facebookAccount;
+	// Use relative path to ensure local file usage
 	const getFbstate = require("./getFbstate1.js");
 	let code2FATemp;
 	let appState;
 	try {
 		try {
 			appState = await getFbstate(checkAndTrimString(email), checkAndTrimString(password), userAgent, proxy);
-			stopSpin(spin);
+			if (spin && spin._stop) spin._stop();
 		}
 		catch (err) {
 			if (err.continue) {
@@ -241,13 +255,13 @@ async function getAppStateFromEmail(spin = { _start: () => { }, _stop: () => { }
 
 				await (async function submitCode(message) {
 					if (message && isExit) {
-						stopSpin(spin);
+						if (spin && spin._stop) spin._stop();
 						log.error("LOGIN FACEBOOK", message);
 						process.exit();
 					}
 
 					if (message) {
-						stopSpin(spin);
+						if (spin && spin._stop) spin._stop();
 						log.warn("LOGIN FACEBOOK", message);
 					}
 
@@ -262,7 +276,7 @@ async function getAppStateFromEmail(spin = { _start: () => { }, _stop: () => { }
 						}
 					}
 					else {
-						stopSpin(spin);
+						if (spin && spin._stop) spin._stop();
 						code2FATemp = await input("> Enter 2FA code or secret: ");
 						readline.moveCursor(process.stderr, 0, -1);
 						readline.clearScreenDown(process.stderr);
@@ -290,7 +304,7 @@ async function getAppStateFromEmail(spin = { _start: () => { }, _stop: () => { }
 							creation: item.creation,
 							lastAccessed: item.lastAccessed
 						})).filter(item => item.key);
-						stopSpin(spin);
+						if (spin && spin._stop) spin._stop();
 					}
 					catch (err) {
 						tryNumber++;
@@ -476,7 +490,7 @@ async function getAppStateToLogin(loginWithEmail) {
 		}
 	}
 	catch (err) {
-		stopSpin(spin);
+		if (spin && spin._stop) spin._stop();
 		let {
 			email,
 			password
@@ -500,7 +514,7 @@ async function getAppStateToLogin(loginWithEmail) {
 			await new Promise((resolve) => {
 				const character = '>';
 				function showOptions() {
-					rl.output.write(`\r${options.map((option, index) => index === currentOption ? colors.blueBright(`${character} (${index + 1}) ${option}`) : `  (${index + 1}) ${option}`).join('\n')}\u001B`);
+					rl.output.write(`\r${options.map((option, index) => index === currentOption ? colors.blueBright(`${character} (${index + 1}) ${option}`) : `  (${index + 1}) ${option}`).join('\n')}\u001B`);
 					rl.write('\u001B[?25l');
 				}
 				rl.input.on('keypress', (_, key) => {
@@ -568,10 +582,10 @@ async function getAppStateToLogin(loginWithEmail) {
 
 		try {
 			appState = await getAppStateFromEmail(spin, facebookAccount);
-			stopSpin(spin);
+			if (spin && spin._stop) spin._stop();
 		}
 		catch (err) {
-			stopSpin(spin);
+			if (spin && spin._stop) spin._stop();
 			log.err("LOGIN FACEBOOK", "Login error: " + err.message);
 			process.exit();
 		}
@@ -645,7 +659,7 @@ async function startBot(loginWithEmail) {
 		login({ appState }, global.GoatBot.config.optionsFca, async function (error, api) {
 			if (!isNaN(facebookAccount.intervalGetNewCookie) && facebookAccount.intervalGetNewCookie > 0)
 				if (facebookAccount.email && facebookAccount.password) {
-					stopSpin(spin);
+					if (spin && spin._stop) spin._stop();
 					log.info("REFRESH COOKIE", "Refresh cookie after " + convertTime(facebookAccount.intervalGetNewCookie * 60 * 1000, true));
 					setTimeout(async function refreshCookie() {
 						try {
@@ -666,10 +680,10 @@ async function startBot(loginWithEmail) {
 					}, facebookAccount.intervalGetNewCookie * 60 * 1000);
 				}
 				else {
-					stopSpin(spin);
+					if (spin && spin._stop) spin._stop();
 					log.warn("REFRESH COOKIE", "Can't refresh cookie");
 				}
-			stopSpin(spin);
+			if (spin && spin._stop) spin._stop();
 
 			if (error) {
 				log.err("LOGIN FACEBOOK", "Login error: " + JSON.stringify(error));
