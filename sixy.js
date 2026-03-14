@@ -214,7 +214,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
 
         const { body, messageID, threadID, isGroup } = event;
 
-        // ---- Auto‑populate mentions ----
         if (!event.mentions) event.mentions = {};
         if (Object.keys(event.mentions).length === 0) {
             if (event.messageReply && event.messageReply.senderID) {
@@ -243,7 +242,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                 } catch (e) {}
             }
         }
-        // ---------------------------------
 
         const senderID = event.userID || event.senderID || event.author;
 
@@ -275,7 +273,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
         const prefix = getPrefix(threadID);
         const role = getRole(threadData, senderID);
 
-        // ---------- Helper functions for mention parsing ----------
         async function searchUserByFullName(api, threadID, searchName) {
             try {
                 const info = await api.getThreadInfo(threadID);
@@ -288,7 +285,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                     return searchTerm;
                 }
                 
-                // exact match on nickname
                 for (const [userID, nickname] of Object.entries(nicknames)) {
                     const lowerNickname = (nickname || '').toLowerCase();
                     if (lowerNickname === searchTerm) {
@@ -296,7 +292,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                     }
                 }
                 
-                // exact match on name
                 for (const user of userInfo) {
                     if (user.name) {
                         const lowerName = user.name.toLowerCase();
@@ -306,7 +301,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                     }
                 }
                 
-                // exact match on firstName + lastName combination
                 for (const user of userInfo) {
                     const firstName = (user.firstName || '').toLowerCase();
                     const lastName = (user.vanity || user.lastName || '').toLowerCase();
@@ -317,7 +311,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                     }
                 }
                 
-                // partial match on nickname
                 for (const [userID, nickname] of Object.entries(nicknames)) {
                     const lowerNickname = (nickname || '').toLowerCase();
                     if (lowerNickname.includes(searchTerm)) {
@@ -325,7 +318,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                     }
                 }
                 
-                // partial match on name
                 for (const user of userInfo) {
                     if (user.name) {
                         const lowerName = user.name.toLowerCase();
@@ -335,7 +327,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                     }
                 }
                 
-                // partial match split
                 for (const user of userInfo) {
                     const firstName = (user.firstName || '').toLowerCase();
                     const lastName = (user.vanity || user.lastName || '').toLowerCase();
@@ -351,7 +342,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                     }
                 }
                 
-                // match by userID substring
                 for (const user of userInfo) {
                     if (user.id.includes(searchTerm)) {
                         return user.id;
@@ -398,7 +388,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             
             return mentions;
         }
-        // -----------------------------------------------------------
 
         const parameters = {
             api, usersData, threadsData, message, event,
@@ -414,7 +403,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
 
                 return body_.replace(new RegExp(`^${prefix_}(\\s+|)${commandName_}`, "i"), "").trim();
             },
-            // 👇 expose the new helper functions so commands can use them
             searchUserByFullName,
             parseMentionsFromBody
         };
@@ -428,14 +416,97 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
 
         let isUserCallCommand = false;
 
-        // ========== ON START (command handler) ==========
         async function onStart() {
-            if (!body || !body.startsWith(prefix))
+            if (!body)
                 return;
+
             const dateNow = Date.now();
-            const args = body.slice(prefix.length).trim().split(/ +/);
-            let commandName = args.shift().toLowerCase();
-            let command = GoatBot.commands.get(commandName) || GoatBot.commands.get(GoatBot.aliases.get(commandName));
+            const { usePrefix = { enable: true, adminUsePrefix: { enable: true, specificUids: [] } } } = config;
+            const isAdminBot = isAdmin(senderID);
+
+            const adminUsePrefixConfig = usePrefix.adminUsePrefix || { enable: true, specificUids: [] };
+            const isSpecificUid = adminUsePrefixConfig.specificUids?.includes(senderID) || false;
+
+            let args = [];
+            let commandName = "";
+            let command = null;
+            let usedPrefix = false;
+
+            if (body.startsWith(prefix)) {
+                usedPrefix = true;
+                args = body.slice(prefix.length).trim().split(/ +/);
+                commandName = (args.shift() || "").toLowerCase();
+            }
+            else {
+                let canUseWithoutPrefix = false;
+
+                if ((isAdminBot || isSpecificUid) && adminUsePrefixConfig.enable === false) {
+                    canUseWithoutPrefix = true;
+                }
+
+                if (!canUseWithoutPrefix) {
+                    return;
+                }
+
+                const trimmedBody = body.trim();
+                const firstWord = trimmedBody.split(/\s+/)[0].toLowerCase();
+
+                const allCommands = Array.from(GoatBot.commands.keys());
+                const allAliases = Array.from(GoatBot.aliases.keys());
+                const allCommandNames = [...allCommands, ...allAliases];
+
+                if (allCommandNames.includes(firstWord)) {
+                    args = trimmedBody.split(/ +/);
+                    commandName = (args.shift() || "").toLowerCase();
+                    usedPrefix = false;
+                } else {
+                    return;
+                }
+            }
+
+            command = GoatBot.commands.get(commandName) || GoatBot.commands.get(GoatBot.aliases.get(commandName));
+
+            if (!command) {
+                if (usedPrefix && !hideNotiMessage.commandNotFound) {
+                    if (!commandName) {
+                        return await message.reply(
+                            utils.getText({ lang: langCode, head: "handlerEvents" }, "onlyPrefix", prefix)
+                        );
+                    } else {
+                        const similarCommands = findSimilarCommands(commandName);
+                        if (similarCommands.length > 0) {
+                            return await message.reply(
+                                utils.getText({ lang: langCode, head: "handlerEvents" }, "commandNotFoundWithSuggestion", commandName, prefix, similarCommands.join(", "))
+                            );
+                        } else {
+                            return await message.reply(
+                                utils.getText({ lang: langCode, head: "handlerEvents" }, "commandNotFound", commandName, prefix)
+                            );
+                        }
+                    }
+                }
+                return;
+            }
+
+            let prefixRequired = true;
+
+            if (usePrefix.enable === false) {
+                prefixRequired = false;
+            }
+
+            if ((isAdminBot || isSpecificUid) && adminUsePrefixConfig.enable === false) {
+                prefixRequired = false;
+            }
+
+            if (command.config.usePrefix !== undefined) {
+                if (usePrefix.enable) {
+                    prefixRequired = command.config.usePrefix;
+                }
+            }
+
+            if (prefixRequired && !usedPrefix) {
+                return;
+            }
 
             const aliasesData = threadData.data.aliases || {};
             for (const cmdName in aliasesData) {
@@ -444,6 +515,7 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                     break;
                 }
             }
+
             if (command)
                 commandName = command.config.name;
 
@@ -456,26 +528,23 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                     if (typeof commandName_ != "string")
                         throw new Error(`The third argument (commandName) must be a string, but got "${getType(commandName_)}"`);
 
-                    return body_.replace(new RegExp(`^${prefix_}(\\s+|)${commandName_}`, "i"), "").trim();
+                    if (usedPrefix) {
+                        return body_.replace(new RegExp(`^${prefix_}(\\s+|)${commandName_}`, "i"), "").trim();
+                    } else {
+                        return body_.replace(new RegExp(`^(\\s+|)${commandName_}`, "i"), "").trim();
+                    }
                 }
                 else {
-                    return body.replace(new RegExp(`^${prefix}(\\s+|)${commandName}`, "i"), "").trim();
+                    if (usedPrefix) {
+                        return body.replace(new RegExp(`^${prefix}(\\s+|)${commandName}`, "i"), "").trim();
+                    } else {
+                        return body.replace(new RegExp(`^(\\s+|)${commandName}`, "i"), "").trim();
+                    }
                 }
             }
 
             if (isBannedOrOnlyAdmin(userData, threadData, senderID, threadID, isGroup, commandName, message, langCode))
                 return;
-
-            if (!command) {
-                if (!hideNotiMessage.commandNotFound)
-                    return await message.reply(
-                        commandName ?
-                            utils.getText({ lang: langCode, head: "handlerEvents" }, "commandNotFound", commandName, prefix) :
-                            utils.getText({ lang: langCode, head: "handlerEvents" }, "commandNotFound2", prefix)
-                    );
-                else
-                    return true;
-            }
 
             const requiredMoney = command.config.requiredMoney;
             if (requiredMoney && requiredMoney > 0) {
@@ -551,7 +620,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             }
         }
 
-        // ========== ON CHAT ==========
         async function onChat() {
             const allOnChat = GoatBot.onChat || [];
             const args = body ? body.split(/ +/) : [];
@@ -563,6 +631,7 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
 
                 const roleConfig = getRoleConfig(utils, command, isGroup, threadData, commandName);
                 const needRole = roleConfig.onChat;
+
                 if (needRole > role)
                     continue;
 
@@ -603,7 +672,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             }
         }
 
-        // ========== ON ANY EVENT ==========
         async function onAnyEvent() {
             const allOnAnyEvent = GoatBot.onAnyEvent || [];
             let args = [];
@@ -653,7 +721,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             }
         }
 
-        // ========== ON FIRST CHAT ==========
         async function onFirstChat() {
             const allOnFirstChat = GoatBot.onFirstChat || [];
             const args = body ? body.split(/ +/) : [];
@@ -704,7 +771,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             }
         }
 
-        // ========== ON REPLY ==========
         async function onReply() {
             if (!event.messageReply)
                 return;
@@ -767,7 +833,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             }
         }
 
-        // ========== ON REACTION ==========
         async function onReaction() {
             const { onReaction } = GoatBot;
             const Reaction = onReaction.get(messageID);
@@ -828,7 +893,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             }
         }
 
-        // ========== EVENT COMMAND ==========
         async function handlerEvent() {
             const { author } = event;
             const allEventCommand = GoatBot.eventCommands.entries();
@@ -857,7 +921,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             }
         }
 
-        // ========== ON EVENT ==========
         async function onEvent() {
             const allOnEvent = GoatBot.onEvent || [];
             const args = [];
@@ -905,7 +968,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             }
         }
 
-        // ========== PLACEHOLDERS ==========
         async function presence() {}
         async function read_receipt() {}
         async function typ() {}
