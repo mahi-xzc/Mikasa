@@ -1,4 +1,3 @@
-// HandlerEvent customized version by Eren.
 const fs = require("fs-extra");
 const nullAndUndefined = [undefined, null];
 
@@ -204,157 +203,6 @@ function createGetText2(langCode, pathCustomLang, prefix, command) {
     return getText2;
 }
 
-async function searchUserByFullName(api, threadID, searchName) {
-    try {
-        // Get thread info
-        const info = await api.getThreadInfo(threadID);
-        const userInfo = info.userInfo || [];
-        const nicknames = info.nicknames || {};
-        
-        // Debug log
-        console.log(`🔍 Searching for user: "${searchName}" in thread ${threadID}`);
-        console.log(`👥 Total users in thread: ${userInfo.length}`);
-        
-        const searchTerm = searchName.toLowerCase().trim();
-        
-        // 1. Check for exact user ID (if searchName is numeric)
-        if (/^\d+$/.test(searchTerm)) {
-            console.log(`🔢 Search term is numeric ID: ${searchTerm}`);
-            return searchTerm;
-        }
-        
-        // 2. First, check nicknames (exact match)
-        console.log(`🔍 Checking ${Object.keys(nicknames).length} nicknames...`);
-        for (const [userID, nickname] of Object.entries(nicknames)) {
-            const lowerNickname = (nickname || '').toLowerCase();
-            if (lowerNickname === searchTerm) {
-                console.log(`✅ Found by exact nickname match: ${nickname} -> ${userID}`);
-                return userID;
-            }
-        }
-        
-        // 3. Check full names (exact match on name field)
-        console.log(`🔍 Checking ${userInfo.length} users for exact name match...`);
-        for (const user of userInfo) {
-            if (user.name) {
-                const lowerName = user.name.toLowerCase();
-                if (lowerName === searchTerm) {
-                    console.log(`✅ Found by exact name match: ${user.name} -> ${user.id}`);
-                    return user.id;
-                }
-            }
-        }
-        
-        // 4. Check for partial matches (contains search term)
-        console.log(`🔍 Checking for partial matches...`);
-        
-        // First priority: nicknames containing search term
-        for (const [userID, nickname] of Object.entries(nicknames)) {
-            const lowerNickname = (nickname || '').toLowerCase();
-            if (lowerNickname.includes(searchTerm)) {
-                console.log(`✅ Found by partial nickname match: ${nickname} -> ${userID}`);
-                return userID;
-            }
-        }
-        
-        // Second priority: names containing search term
-        for (const user of userInfo) {
-            if (user.name) {
-                const lowerName = user.name.toLowerCase();
-                if (lowerName.includes(searchTerm)) {
-                    console.log(`✅ Found by partial name match: ${user.name} -> ${user.id}`);
-                    return user.id;
-                }
-            }
-        }
-        
-        // 5. Check first name + last name combinations
-        console.log(`🔍 Checking name combinations...`);
-        for (const user of userInfo) {
-            const firstName = (user.firstName || '').toLowerCase();
-            const lastName = (user.vanity || user.lastName || '').toLowerCase();
-            const fullNameCombination = `${firstName} ${lastName}`.trim();
-            
-            if (fullNameCombination === searchTerm) {
-                console.log(`✅ Found by full name combination: ${firstName} ${lastName} -> ${user.id}`);
-                return user.id;
-            }
-            
-            // Check if search term contains both first and last name parts
-            const searchParts = searchTerm.split(' ');
-            if (searchParts.length > 1) {
-                const hasFirstName = firstName.includes(searchParts[0]);
-                const hasLastName = lastName.includes(searchParts[1]);
-                
-                if (hasFirstName && hasLastName) {
-                    console.log(`✅ Found by name parts match: ${firstName} ${lastName} -> ${user.id}`);
-                    return user.id;
-                }
-            }
-        }
-        
-        // 6. Fallback: check if any user ID in the group contains the search term
-        // Sometimes people might use part of their ID
-        for (const user of userInfo) {
-            if (user.id.includes(searchTerm)) {
-                console.log(`✅ Found by ID partial match: ${user.id}`);
-                return user.id;
-            }
-        }
-        
-        console.log(`❌ No user found for search term: "${searchName}"`);
-        return null;
-    } catch (error) {
-        console.error("❌ Error searching user by name:", error);
-        return null;
-    }
-}
-
-// Function to parse mentions from body text
-async function parseMentionsFromBody(api, threadID, body) {
-    const mentions = {};
-    
-    if (!body || typeof body !== 'string') {
-        return mentions;
-    }
-    
-    // Find all @mentions in the body
-    const mentionRegex = /@([\w\s\u00C0-\u024F\u1E00-\u1EFF]+)/g;
-    const matches = [...body.matchAll(mentionRegex)];
-    
-    if (matches.length === 0) {
-        return mentions;
-    }
-    
-    console.log(`🔍 Found ${matches.length} potential mentions in body:`, matches.map(m => m[1]));
-    
-    // For each mention, try to resolve it
-    for (const match of matches) {
-        const mentionedName = match[1].trim();
-        
-        if (!mentionedName) continue;
-        
-        // Skip if it's already a numeric ID
-        if (/^\d+$/.test(mentionedName)) {
-            mentions[mentionedName] = "";
-            console.log(`✅ Mention is already a numeric ID: ${mentionedName}`);
-            continue;
-        }
-        
-        // Try to find user by name
-        const userID = await searchUserByFullName(api, threadID, mentionedName);
-        
-        if (userID) {
-            mentions[userID] = "";
-            console.log(`✅ Resolved mention "${mentionedName}" -> ${userID}`);
-        } else {
-            console.log(`❌ Could not resolve mention: "${mentionedName}"`);
-        }
-    }
-    
-    return mentions;
-}
-
 module.exports = function (api, threadModel, userModel, dashBoardModel, globalModel, usersData, threadsData, dashBoardData, globalData) {
     return async function (event, message) {
 
@@ -366,8 +214,36 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
 
         const { body, messageID, threadID, isGroup } = event;
 
-        if (!threadID)
-            return;
+        // ---- Auto‑populate mentions ----
+        if (!event.mentions) event.mentions = {};
+        if (Object.keys(event.mentions).length === 0) {
+            if (event.messageReply && event.messageReply.senderID) {
+                event.mentions = { [event.messageReply.senderID]: "" };
+            } else if (body && body.includes("@")) {
+                try {
+                    const tagMatch = body.match(/@([^ ]+)/);
+                    if (tagMatch) {
+                        const tagName = tagMatch[1].toLowerCase();
+                        const info = await api.getThreadInfo(threadID);
+                        const userInfo = info.userInfo || [];
+                        const nicknames = info.nicknames || {};
+
+                        let foundID = Object.keys(nicknames).find(id => nicknames[id].toLowerCase().includes(tagName));
+                        if (!foundID) {
+                            const user = userInfo.find(u => 
+                                (u.name && u.name.toLowerCase().includes(tagName)) || 
+                                (u.firstName && u.firstName.toLowerCase().includes(tagName))
+                            );
+                            if (user) foundID = user.id;
+                        }
+                        if (foundID) {
+                            event.mentions = { [foundID]: "" };
+                        }
+                    }
+                } catch (e) {}
+            }
+        }
+        // ---------------------------------
 
         const senderID = event.userID || event.senderID || event.author;
 
@@ -398,6 +274,132 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
 
         const prefix = getPrefix(threadID);
         const role = getRole(threadData, senderID);
+
+        // ---------- Helper functions for mention parsing ----------
+        async function searchUserByFullName(api, threadID, searchName) {
+            try {
+                const info = await api.getThreadInfo(threadID);
+                const userInfo = info.userInfo || [];
+                const nicknames = info.nicknames || {};
+                
+                const searchTerm = searchName.toLowerCase().trim();
+                
+                if (/^\d+$/.test(searchTerm)) {
+                    return searchTerm;
+                }
+                
+                // exact match on nickname
+                for (const [userID, nickname] of Object.entries(nicknames)) {
+                    const lowerNickname = (nickname || '').toLowerCase();
+                    if (lowerNickname === searchTerm) {
+                        return userID;
+                    }
+                }
+                
+                // exact match on name
+                for (const user of userInfo) {
+                    if (user.name) {
+                        const lowerName = user.name.toLowerCase();
+                        if (lowerName === searchTerm) {
+                            return user.id;
+                        }
+                    }
+                }
+                
+                // exact match on firstName + lastName combination
+                for (const user of userInfo) {
+                    const firstName = (user.firstName || '').toLowerCase();
+                    const lastName = (user.vanity || user.lastName || '').toLowerCase();
+                    const fullNameCombination = `${firstName} ${lastName}`.trim();
+                    
+                    if (fullNameCombination === searchTerm) {
+                        return user.id;
+                    }
+                }
+                
+                // partial match on nickname
+                for (const [userID, nickname] of Object.entries(nicknames)) {
+                    const lowerNickname = (nickname || '').toLowerCase();
+                    if (lowerNickname.includes(searchTerm)) {
+                        return userID;
+                    }
+                }
+                
+                // partial match on name
+                for (const user of userInfo) {
+                    if (user.name) {
+                        const lowerName = user.name.toLowerCase();
+                        if (lowerName.includes(searchTerm)) {
+                            return user.id;
+                        }
+                    }
+                }
+                
+                // partial match split
+                for (const user of userInfo) {
+                    const firstName = (user.firstName || '').toLowerCase();
+                    const lastName = (user.vanity || user.lastName || '').toLowerCase();
+                    
+                    const searchParts = searchTerm.split(' ');
+                    if (searchParts.length > 1) {
+                        const hasFirstName = firstName.includes(searchParts[0]);
+                        const hasLastName = lastName.includes(searchParts[1]);
+                        
+                        if (hasFirstName && hasLastName) {
+                            return user.id;
+                        }
+                    }
+                }
+                
+                // match by userID substring
+                for (const user of userInfo) {
+                    if (user.id.includes(searchTerm)) {
+                        return user.id;
+                    }
+                }
+                
+                return null;
+            } catch (error) {
+                console.error("❌ Error searching user by name:", error);
+                return null;
+            }
+        }
+
+        async function parseMentionsFromBody(api, threadID, body) {
+            const mentions = {};
+            
+            if (!body || typeof body !== 'string') {
+                return mentions;
+            }
+            
+            const mentionRegex = /@([\w\s\u00C0-\u024F\u1E00-\u1EFF]+)/g;
+            const matches = [...body.matchAll(mentionRegex)];
+            
+            if (matches.length === 0) {
+                return mentions;
+            }
+            
+            for (const match of matches) {
+                const mentionedName = match[1].trim();
+                
+                if (!mentionedName) continue;
+                
+                if (/^\d+$/.test(mentionedName)) {
+                    mentions[mentionedName] = "";
+                    continue;
+                }
+                
+                const userID = await searchUserByFullName(api, threadID, mentionedName);
+                
+                if (userID) {
+                    mentions[userID] = "";
+                }
+            }
+            
+            return mentions;
+        }
+        // -----------------------------------------------------------
+
         const parameters = {
             api, usersData, threadsData, message, event,
             userModel, threadModel, prefix, dashBoardModel,
@@ -411,7 +413,10 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                         throw new Error(`The parameter "${i + 1}" must be a string, but got "${getType(arguments[i])}"`);
 
                 return body_.replace(new RegExp(`^${prefix_}(\\s+|)${commandName_}`, "i"), "").trim();
-            }
+            },
+            // 👇 expose the new helper functions so commands can use them
+            searchUserByFullName,
+            parseMentionsFromBody
         };
         const langCode = threadData.data.lang || config.language || "en";
 
@@ -423,128 +428,14 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
 
         let isUserCallCommand = false;
 
+        // ========== ON START (command handler) ==========
         async function onStart() {
-            if (!body)
+            if (!body || !body.startsWith(prefix))
                 return;
-
             const dateNow = Date.now();
-            const { usePrefix = { enable: true, adminUsePrefix: { enable: true, specificUids: [] } } } = config;
-            const isAdminBot = isAdmin(senderID);
-
-            const adminUsePrefixConfig = usePrefix.adminUsePrefix || { enable: true, specificUids: [] };
-            const isSpecificUid = adminUsePrefixConfig.specificUids?.includes(senderID) || false;
-
-            let args = [];
-            let commandName = "";
-            let command = null;
-            let usedPrefix = false;
-            let usedAdminPrefix = false;
-
-            // First, parse mentions from body text (this is the key fix)
-            const parsedMentions = await parseMentionsFromBody(api, threadID, body);
-            
-            // Merge parsed mentions with existing mentions
-            event.mentions = event.mentions || {};
-            Object.assign(event.mentions, parsedMentions);
-            
-            const mentionIDs = Object.keys(event.mentions);
-            
-            console.log(`🔍 DEBUG MENTIONS:`);
-            console.log(`- Body: "${body}"`);
-            console.log(`- Event mentions (Facebook resolved):`, Object.keys(event.mentions).filter(k => !parsedMentions[k]));
-            console.log(`- Parsed mentions (from text):`, Object.keys(parsedMentions));
-            console.log(`- Final mentions:`, mentionIDs);
-            
-            if (event.messageReply && event.messageReply.senderID) {
-                event.mentions[event.messageReply.senderID] = "";
-                console.log(`✅ Added reply sender to mentions: ${event.messageReply.senderID}`);
-            }
-
-            const adminPrefix = config.adminPrefix || "$";
-            if (adminPrefix && body.startsWith(adminPrefix)) {
-                if (!isAdminBot) {
-                    return await message.reply("❌ The admin prefix is only available for bot admins. Please use the normal prefix.");
-                }
-                usedAdminPrefix = true;
-                args = body.slice(adminPrefix.length).trim().split(/ +/);
-                commandName = args.shift().toLowerCase();
-                usedPrefix = true;
-            }
-            else if (body.startsWith(prefix)) {
-                usedPrefix = true;
-                args = body.slice(prefix.length).trim().split(/ +/);
-                commandName = args.shift().toLowerCase();
-            }
-            else {
-                let canUseWithoutPrefix = false;
-
-                if ((isAdminBot || isSpecificUid) && adminUsePrefixConfig.enable === false) {
-                    canUseWithoutPrefix = true;
-                }
-
-                if (!canUseWithoutPrefix) {
-                    return;
-                }
-
-                const trimmedBody = body.trim();
-                const firstWord = trimmedBody.split(/\s+/)[0].toLowerCase();
-
-                const allCommands = Array.from(GoatBot.commands.keys());
-                const allAliases = Array.from(GoatBot.aliases.keys());
-                const allCommandNames = [...allCommands, ...allAliases];
-
-                if (allCommandNames.includes(firstWord)) {
-                    args = trimmedBody.split(/ +/);
-                    commandName = args.shift().toLowerCase();
-                    usedPrefix = false;
-                } else {
-                    return;
-                }
-            }
-
-            command = GoatBot.commands.get(commandName) || GoatBot.commands.get(GoatBot.aliases.get(commandName));
-
-            if (!command) {
-                if (usedPrefix && !hideNotiMessage.commandNotFound) {
-                    if (!commandName) {
-                        return await message.reply(
-                            utils.getText({ lang: langCode, head: "handlerEvents" }, "onlyPrefix", prefix)
-                        );
-                    } else {
-                        const similarCommands = findSimilarCommands(commandName);
-                        if (similarCommands.length > 0) {
-                            return await message.reply(
-                                utils.getText({ lang: langCode, head: "handlerEvents" }, "commandNotFoundWithSuggestion", commandName, prefix, similarCommands.join(", "))
-                            );
-                        } else {
-                            return await message.reply(
-                                utils.getText({ lang: langCode, head: "handlerEvents" }, "commandNotFound", commandName, prefix)
-                            );
-                        }
-                    }
-                }
-                return;
-            }
-
-            let prefixRequired = true;
-
-            if (usePrefix.enable === false) {
-                prefixRequired = false;
-            }
-
-            if ((isAdminBot || isSpecificUid) && adminUsePrefixConfig.enable === false) {
-                prefixRequired = false;
-            }
-
-            if (command.config.usePrefix !== undefined) {
-                if (usePrefix.enable) {
-                    prefixRequired = command.config.usePrefix;
-                }
-            }
-
-            if (prefixRequired && !usedPrefix) {
-                return;
-            }
+            const args = body.slice(prefix.length).trim().split(/ +/);
+            let commandName = args.shift().toLowerCase();
+            let command = GoatBot.commands.get(commandName) || GoatBot.commands.get(GoatBot.aliases.get(commandName));
 
             const aliasesData = threadData.data.aliases || {};
             for (const cmdName in aliasesData) {
@@ -553,7 +444,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                     break;
                 }
             }
-
             if (command)
                 commandName = command.config.name;
 
@@ -566,31 +456,26 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                     if (typeof commandName_ != "string")
                         throw new Error(`The third argument (commandName) must be a string, but got "${getType(commandName_)}"`);
 
-                    if (usedPrefix) {
-                        if (usedAdminPrefix) {
-                            return body_.replace(new RegExp(`^${adminPrefix}(\\s+|)${commandName_}`, "i"), "").trim();
-                        } else {
-                            return body_.replace(new RegExp(`^${prefix_}(\\s+|)${commandName_}`, "i"), "").trim();
-                        }
-                    } else {
-                        return body_.replace(new RegExp(`^(\\s+|)${commandName_}`, "i"), "").trim();
-                    }
+                    return body_.replace(new RegExp(`^${prefix_}(\\s+|)${commandName_}`, "i"), "").trim();
                 }
                 else {
-                    if (usedPrefix) {
-                        if (usedAdminPrefix) {
-                            return body.replace(new RegExp(`^${adminPrefix}(\\s+|)${commandName}`, "i"), "").trim();
-                        } else {
-                            return body.replace(new RegExp(`^${prefix}(\\s+|)${commandName}`, "i"), "").trim();
-                        }
-                    } else {
-                        return body.replace(new RegExp(`^(\\s+|)${commandName}`, "i"), "").trim();
-                    }
+                    return body.replace(new RegExp(`^${prefix}(\\s+|)${commandName}`, "i"), "").trim();
                 }
             }
 
             if (isBannedOrOnlyAdmin(userData, threadData, senderID, threadID, isGroup, commandName, message, langCode))
                 return;
+
+            if (!command) {
+                if (!hideNotiMessage.commandNotFound)
+                    return await message.reply(
+                        commandName ?
+                            utils.getText({ lang: langCode, head: "handlerEvents" }, "commandNotFound", commandName, prefix) :
+                            utils.getText({ lang: langCode, head: "handlerEvents" }, "commandNotFound2", prefix)
+                    );
+                else
+                    return true;
+            }
 
             const requiredMoney = command.config.requiredMoney;
             if (requiredMoney && requiredMoney > 0) {
@@ -658,7 +543,7 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
                     removeCommandNameFromBody
                 });
                 timestamps[senderID] = dateNow;
-                log.info("CALL COMMAND", `${commandName} | ${userData.name} | ${senderID} | ${threadID} | ${args.join(" ")} | ${usedAdminPrefix ? "AdminPrefix" : "NormalPrefix"}`);
+                log.info("CALL COMMAND", `${commandName} | ${userData.name} | ${senderID} | ${threadID} | ${args.join(" ")}`);
             }
             catch (err) {
                 log.err("CALL COMMAND", `An error occurred when calling the command ${commandName}`, err);
@@ -666,6 +551,7 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             }
         }
 
+        // ========== ON CHAT ==========
         async function onChat() {
             const allOnChat = GoatBot.onChat || [];
             const args = body ? body.split(/ +/) : [];
@@ -677,7 +563,6 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
 
                 const roleConfig = getRoleConfig(utils, command, isGroup, threadData, commandName);
                 const needRole = roleConfig.onChat;
-
                 if (needRole > role)
                     continue;
 
@@ -718,6 +603,7 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             }
         }
 
+        // ========== ON ANY EVENT ==========
         async function onAnyEvent() {
             const allOnAnyEvent = GoatBot.onAnyEvent || [];
             let args = [];
@@ -727,7 +613,7 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             for (const key of allOnAnyEvent) {
                 if (typeof key !== "string")
                     continue;
-                const command = GoatBot.commands.get(key.toLowerCase());
+                const command = GoatBot.commands.get(key);
                 if (!command)
                     continue;
                 const commandName = command.config.name;
@@ -767,6 +653,7 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             }
         }
 
+        // ========== ON FIRST CHAT ==========
         async function onFirstChat() {
             const allOnFirstChat = GoatBot.onFirstChat || [];
             const args = body ? body.split(/ +/) : [];
@@ -817,6 +704,7 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             }
         }
 
+        // ========== ON REPLY ==========
         async function onReply() {
             if (!event.messageReply)
                 return;
@@ -879,6 +767,7 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             }
         }
 
+        // ========== ON REACTION ==========
         async function onReaction() {
             const { onReaction } = GoatBot;
             const Reaction = onReaction.get(messageID);
@@ -939,6 +828,7 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             }
         }
 
+        // ========== EVENT COMMAND ==========
         async function handlerEvent() {
             const { author } = event;
             const allEventCommand = GoatBot.eventCommands.entries();
@@ -967,6 +857,7 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             }
         }
 
+        // ========== ON EVENT ==========
         async function onEvent() {
             const allOnEvent = GoatBot.onEvent || [];
             const args = [];
@@ -1014,17 +905,10 @@ module.exports = function (api, threadModel, userModel, dashBoardModel, globalMo
             }
         }
 
-        async function presence() {
-            // Your code here
-        }
-
-        async function read_receipt() {
-            // Your code here
-        }
-
-        async function typ() {
-            // Your code here
-        }
+        // ========== PLACEHOLDERS ==========
+        async function presence() {}
+        async function read_receipt() {}
+        async function typ() {}
 
         return {
             onAnyEvent,
